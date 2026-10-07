@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="ValthvnQuota.FlyoutWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:ValthvnQuota.Controls">
+
+    <Grid x:Name="Root" CornerRadius="8">
+        <ScrollViewer Padding="16,14,16,12"
+                      HorizontalScrollBarVisibility="Disabled"
+                      VerticalScrollBarVisibility="Auto">
+            <StackPanel x:Name="ContentPanel" Spacing="14" VerticalAlignment="Top">
+                <ComboBox x:Name="ProviderModeBox" HorizontalAlignment="Stretch"
+                          SelectionChanged="ProviderModeBox_SelectionChanged"
+                          AutomationProperties.AutomationId="QuotaDisplayMode"/>
+                <TextBlock x:Name="CompactHint" FontSize="11" TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Visibility="Collapsed"/>
+            <controls:CodexUsagePanel x:Name="UsagePanel"
+                                      HorizontalAlignment="Stretch"
+                                      VerticalAlignment="Top"/>
+            <controls:CodexUsagePanel x:Name="AntigravityPanel"
+                                      HorizontalAlignment="Stretch"
+                                      VerticalAlignment="Top"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- The appearance section floats over the usage content (same grid cell, drawn on top): it
+             never contributes to the flyout height, and the window does not grow or shrink when it
+             reveals. Compact sizing (the WinUI density dictionary) is scoped to this floating panel so
+             the settings read as dense desktop chrome over the acrylic backdrop. -->
+        <StackPanel x:Name="AppearanceSection"
+                    Margin="16,6,16,12"
+                    HorizontalAlignment="Stretch"
+                    VerticalAlignment="Bottom"
+                    Visibility="Collapsed">
+            <StackPanel.RenderTransform>
+                <TranslateTransform x:Name="AppearanceSectionTransform"/>
+            </StackPanel.RenderTransform>
+            <StackPanel.Resources>
+                <ResourceDictionary>
+                    <ResourceDictionary.MergedDictionaries>
+                        <ResourceDictionary Source="ms-appx:///Microsoft.UI.Xaml/DensityStyles/Compact.xaml" />
+                    </ResourceDictionary.MergedDictionaries>
+                </ResourceDictionary>
+            </StackPanel.Resources>
+            <Border Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="14,10,14,12">
+                <StackPanel Spacing="8">
+            <StackPanel Orientation="Horizontal"
+                        Spacing="10"
+                        HorizontalAlignment="Left">
+                <CheckBox x:Name="ShowIconCheck"
+                          Content="Icon"
+                          FontSize="12"
+                          MinHeight="20"
+                          Padding="6,0,0,0"
+                          VerticalContentAlignment="Center"
+                          MinWidth="0"
+                          VerticalAlignment="Center"
+                          Checked="AppearanceCheck_Checked"
+                          Unchecked="AppearanceCheck_Unchecked"
+                          ToolTipService.ToolTip="Show the Codex badge in the taskbar tile"/>
+                <CheckBox x:Name="ShowProgressBarCheck"
+                          Content="Bars"
+                          FontSize="12"
+                          MinHeight="20"
+                          Padding="6,0,0,0"
+                          VerticalContentAlignment="Center"
+                          MinWidth="0"
+                          VerticalAlignment="Center"
+                          Checked="AppearanceCheck_Checked"
+                          Unchecked="AppearanceCheck_Unchecked"
+                          ToolTipService.ToolTip="Show progress bars in the taskbar tile; percentages always stay"/>
+                <CheckBox x:Name="ColorCodeTextCheck"
+                          Content="Color %"
+                          FontSize="12"
+                          MinHeight="20"
+                          Padding="6,0,0,0"
+                          VerticalContentAlignment="Center"
+                          MinWidth="0"
+                          VerticalAlignment="Center"
+                          Checked="AppearanceCheck_Checked"
+                          Unchecked="AppearanceCheck_Unchecked"
+                          ToolTipService.ToolTip="Color the remaining percent: orange at 50% or less, red at 20% or less"/>
+                <CheckBox x:Name="ImminentCheck"
+                          Content="Exact time"
+                          FontSize="12"
+                          MinHeight="20"
+                          Padding="6,0,0,0"
+                          VerticalContentAlignment="Center"
+                          MinWidth="0"
+                          VerticalAlignment="Center"
+                          Checked="AppearanceCheck_Checked"
+                          Unchecked="AppearanceCheck_Unchecked"
+                          ToolTipService.ToolTip="Within 24 hours of a reset, show the exact local time instead of a countdown"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal"
+                        Spacing="8"
+                        HorizontalAlignment="Left"
+                        Margin="0,6,0,0">
+                <TextBlock x:Name="WarnBelowText"
+                           Text="Warn below %"
+                           VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Style="{StaticResource CaptionTextBlockStyle}"/>
+                <NumberBox x:Name="WarnUpperBox"
+                           Value="50"
+                           Minimum="1"
+                           Maximum="99"
+                           SmallChange="5"
+                           Width="64"
+                           SpinButtonPlacementMode="Compact"
+                           ValueChanged="WarnThresholdBox_ValueChanged"
+                           ToolTipService.ToolTip="Caution (orange) below this remaining percent"/>
+                <NumberBox x:Name="WarnLowerBox"
+                           Value="20"
+                           Minimum="0"
+                           Maximum="99"
+                           SmallChange="5"
+                           Width="64"
+                           SpinButtonPlacementMode="Compact"
+                           ValueChanged="WarnThresholdBox_ValueChanged"
+                           ToolTipService.ToolTip="Critical (red) below this remaining percent"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal"
+                        Spacing="8"
+                        HorizontalAlignment="Left">
+                <TextBlock x:Name="WorkdayHoursText"
+                           Text="Workday hours"
+                           VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Style="{StaticResource CaptionTextBlockStyle}"/>
+                <NumberBox x:Name="WorkdayHoursBox"
+                           Value="8"
+                           Minimum="1"
+                           Maximum="24"
+                           SmallChange="1"
+                           Width="64"
+                           SpinButtonPlacementMode="Compact"
+                           ValueChanged="WorkdayHoursBox_ValueChanged"
+                           ToolTipService.ToolTip="Assumed coding hours in each 24-hour quota day"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal"
+                        Spacing="8"
+                        HorizontalAlignment="Left">
+                <TextBlock x:Name="LanguageText"
+                           Text="Language"
+                           VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Style="{StaticResource CaptionTextBlockStyle}"/>
+                <ComboBox x:Name="LanguageBox"
+                          Width="136"
+                          SelectionChanged="LanguageBox_SelectionChanged"/>
+            </StackPanel>
+            <controls:AutoSendSection x:Name="AutoSendSection" HorizontalAlignment="Stretch"/>
+            <!-- Replaces the auto-send section (inside the settings panel) while Codex isn't running. -->
+            <StackPanel x:Name="NotRunningBlock"
+                        Visibility="Collapsed"
+                        Spacing="2">
+                <TextBlock x:Name="NotRunningTitle"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           TextWrapping="Wrap"/>
+                <TextBlock x:Name="NotRunningDetail"
+                           FontSize="11"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           TextWrapping="Wrap"/>
+            </StackPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </Grid>
+</Window>

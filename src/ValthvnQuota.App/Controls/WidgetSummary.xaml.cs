@@ -1,0 +1,1281 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using Microsoft.UI;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
+using Windows.Foundation;
+using Windows.UI;
+using ValthvnQuota.Helpers;
+using ValthvnQuota.Usage;
+
+namespace ValthvnQuota.Controls
+{
+    public sealed partial class WidgetSummary : UserControl, IDisposable
+    {
+        private const int MaxRowsPerGroup = 2;
+        private const int MinLabelColumnWidth = 0;
+        private const int MinResetColumnWidth = 0;
+        private const int ValueColumnWidth = 34;
+        private const int WidgetFontSize = 11;
+        private const int BarHeight = 6;
+        private const int SingleRowBarHeight = 8;
+        private const int BarWidthBarsOnly = 54;
+        private const int BarWidthBarsAndPercentages = 46;
+        private const int BarColumnWidthBarsOnly = 54;
+        private const int BarColumnWidthBarsAndPercentages = 46;
+        private const int IconHostSizeBars = 30;
+        private const int IconHostSizePercentagesOnly = 26;
+        private const double RowLabelGlyphSize = 12;
+        private const double RowLabelGlyphReserve = 18;
+        private const double GlyphViewportSize = 100;
+
+        /// <summary>Width of the badge column; collapses to 0 when the icon is hidden.</summary>
+        private static double IconColumnLogicalWidth
+            => WidgetAppearanceSettings.ShowIcon ? (IsCompact ? 20 : IconHostSizeBars) : 0;
+
+        /// <summary>Width of the bar column; collapses to 0 when progress bars are hidden
+        /// (percentages stay).</summary>
+        private static double BarColumnLogicalWidth
+            => WidgetAppearanceSettings.ShowProgressBar ? (IsCompact ? 28 : BarColumnWidthBarsAndPercentages) : 0;
+        private static bool IsCompact => QuotaProviderSettings.DisplayMode == QuotaDisplayMode.Both;
+        private const double NormalizedGlyphExtent = 88;
+        private const double StaleOpacity = 0.55;
+        private const int PanelColumnSpacing = 5;
+        // Slack the width math reserves on top of the measured columns, so a rounding difference between
+        // the analytic total and what the Grid actually arranges can never clip the last column.
+        private const int WidthSlack = 2;
+
+        /// <summary>Placeholder shown before any usage has been applied. Shared and never mutated, so a
+        /// tile that renders on every usage publish does not allocate a list per pass.</summary>
+        private static readonly List<WidgetUsageRow> PlaceholderRows = [new("Usage", 0, "--")];
+
+        public event Action? Clicked;
+        public event Action<int>? DesiredHostWidthChanged;
+
+        /// <summary>
+        /// The width (logical px) this tile last asked its host for. The taskbar host sums this across the
+        /// tiles it shows to size the widget and to decide how many tiles actually fit.
+        /// </summary>
+        public int DesiredLogicalWidth { get; private set; }
+
+        private readonly List<RenderedRow> _renderedRows = new();
+        // Threshold-line brush for the bars, re-derived on every taskbar theme change. The line runs
+        // counter to the text colors: the track inverts with the taskbar theme (dark on a light
+        // taskbar, light on a dark one), so a light line on light and dark on dark keeps it visible.
+        private SolidColorBrush _markerBrush = new SolidColorBrush(new Windows.UI.Color { A = 255, R = 255, G = 255, B = 255 });
+        private List<WidgetUsageRow> _rows = new();
+        private UsageResult? _lastResult;
+        private string? _lastRenderSignature;
+        private bool _isActiveToolVisible = true;
+
+        /// <summary>
+        /// Returns the display name for the constrained taskbar widget.
+        /// Providers with long brand names expose a short DisplayName so the tray widget stays compact.
+        /// </summary>
+        private static string WidgetDisplayName(string fullName)
+            => string.IsNullOrEmpty(fullName) ? fullName
+            : fullName switch
+            {
+                "GitHub Copilot" => "Copilot",
+                _ => fullName,
+            };
+
+        /// <summary>Rows this tile shows — the full Codex row set; there are no per-row visibility toggles.</summary>
+        public int RowCount => CurrentRows().Count;
+
+        /// <summary>
+        /// The width this tile WOULD take, without rendering it.
+        ///
+        /// The host sums this across its tiles to size the widget host window. Rendering to read the width
+        /// made the tile visibly flash — every re-render disturbed the visible tile, and the host re-runs
+        /// this on every usage publish — so the column widths, which are a pure function of the rows, are
+        /// computed directly instead.
+        /// </summary>
+        public int MeasureDesiredWidth()
+            => CalculateDesiredWidth(CurrentRows());
+
+        public HorizontalAlignment ElementsAlignment
+        {
+            get => Panel.HorizontalAlignment;
+            set => Panel.HorizontalAlignment = value;
+        }
+
+        public WidgetSummary()
+        {
+            InitializeComponent();
+            ApplyTaskbarForeground();
+            RenderRows();
+            WidgetAppearanceSettings.Changed += OnAppearanceChanged;
+            QuotaProviderSettings.Changed += OnAppearanceChanged;
+            SystemThemeWatcher.Start();
+            SystemThemeWatcher.Changed += OnSystemThemeChanged;
+            // The tile is intentionally click-only. Keep activation as a Tapped gesture so the
+            // taskbar host does not need to expose raw pointer handling here.
+            Tapped += (_, _) => Clicked?.Invoke();
+
+            // Auto-send armed / Codex liveness dot, right in the badge corner. Green while the
+            // one-shot auto-send is armed and Codex is up; red when Codex isn't running (the armed
+            // state cannot fire then, so the red takes priority); hidden otherwise.
+            Services.CodexPresence.Instance.Changed += OnCodexPresenceChanged;
+            _codexRunning = Services.CodexPresence.Instance.IsRunning;
+            Services.AutoSendService.Instance.StatusChanged += OnAutoSendStatusChanged;
+            ApplyAutoSendStatus(Services.AutoSendService.Instance.Status);
+        }
+
+        private static readonly SolidColorBrush ArmedDotBrush = new(Color.FromArgb(255, 0x2E, 0xA0, 0x43));
+        private static readonly SolidColorBrush OfflineDotBrush = new(Color.FromArgb(255, 0xC4, 0x2B, 0x1C));
+        private bool _autoSendArmed;
+        private bool _codexRunning = true;
+
+        private void OnAutoSendStatusChanged(Services.AutoSendStatus status)
+        {
+            // Status publishes arrive off the UI thread. If the queue is gone (shutdown),
+            // drop instead of touching UI inline (RPC_E_WRONG_THREAD).
+            if (!DispatcherQueue.TryEnqueue(() => ApplyAutoSendStatus(status)))
+                Diagnostics.Log.Warning("WidgetSummary auto-send update dropped: DispatcherQueue unavailable.");
+        }
+
+        private void ApplyAutoSendStatus(Services.AutoSendStatus status)
+        {
+            _autoSendArmed = status.State != Services.AutoSendState.Idle;
+            UpdateArmedDot();
+        }
+
+        private void OnCodexPresenceChanged(bool running)
+        {
+            // Presence publishes arrive off the UI thread. If the queue is gone (shutdown),
+            // drop instead of touching UI inline (RPC_E_WRONG_THREAD).
+            if (!DispatcherQueue.TryEnqueue(() => ApplyCodexPresence(running)))
+                Diagnostics.Log.Warning("WidgetSummary presence update dropped: DispatcherQueue unavailable.");
+        }
+
+        private void ApplyCodexPresence(bool running)
+        {
+            _codexRunning = running;
+            UpdateArmedDot();
+        }
+
+        private void UpdateArmedDot()
+        {
+            if (_lastResult?.Id == ProviderId.Antigravity)
+            {
+                ArmedDot.Visibility = Visibility.Collapsed;
+                return;
+            }
+            if (!_codexRunning)
+            {
+                ArmedDot.Fill = OfflineDotBrush;
+                ArmedDot.Visibility = Visibility.Visible;
+                ToolTipService.SetToolTip(ArmedDot, AppStrings.Get("Codex.NotRunning"));
+            }
+            else if (_autoSendArmed)
+            {
+                ArmedDot.Fill = ArmedDotBrush;
+                ArmedDot.Visibility = Visibility.Visible;
+                ToolTipService.SetToolTip(ArmedDot, AppStrings.Get("AutoSend.ArmedTooltip"));
+            }
+            else
+            {
+                ArmedDot.Visibility = Visibility.Collapsed;
+                ToolTipService.SetToolTip(ArmedDot, null);
+            }
+        }
+
+        // B1: the appearance Changed event is static, so an unsubscribed summary is rooted forever and
+        // leaks on every widget recreation (DPI/monitor/taskbar change, Explorer restart). The widget
+        // calls Dispose for each tile in its own Dispose path.
+        public void Dispose()
+        {
+            WidgetAppearanceSettings.Changed -= OnAppearanceChanged;
+            QuotaProviderSettings.Changed -= OnAppearanceChanged;
+            SystemThemeWatcher.Changed -= OnSystemThemeChanged;
+            Services.AutoSendService.Instance.StatusChanged -= OnAutoSendStatusChanged;
+            Services.CodexPresence.Instance.Changed -= OnCodexPresenceChanged;
+        }
+
+        /// <summary>Re-renders the tile when the taskbar theme flips (dark/light mode switch).</summary>
+        private void OnSystemThemeChanged()
+        {
+            // The signature now includes the theme, so a plain Apply re-renders with the new colors.
+            if (_lastResult is { } result)
+                Apply(result);
+            else
+                ApplyTaskbarForeground();
+        }
+
+        /// <summary>
+        /// Re-renders when the tile's appearance toggles change (hide icon / hide progress bar). The
+        /// re-render re-measures and raises <see cref="DesiredHostWidthChanged"/>, so the host re-lays
+        /// itself out to the new width automatically.
+        /// </summary>
+        private void OnAppearanceChanged()
+        {
+            if (_lastResult is { } result)
+                Apply(result, force: true);
+            else
+                RenderRows();
+        }
+
+        private void ApplyTaskbarForeground()
+        {
+            bool light = Interop.SystemInfos.IsSystemLightThemeUsed() == true;
+            Foreground = new SolidColorBrush(light ? Color.FromArgb(255, 28, 28, 28) : new Windows.UI.Color { A = 255, R = 255, G = 255, B = 255 });
+            var track = new SolidColorBrush(light ? Color.FromArgb(90, 28, 28, 28) : Color.FromArgb(110, 255, 255, 255));
+            _markerBrush = new SolidColorBrush(light ? new Windows.UI.Color { A = 255, R = 255, G = 255, B = 255 } : new Windows.UI.Color { A = 255, R = 0, G = 0, B = 0 });
+
+            foreach (var row in _renderedRows)
+            {
+                row.Track.Background = track;
+                // This method runs after every render and is the single writer of the value color:
+                // urgency tint when color coding is on and the remaining percent crossed a threshold,
+                // the taskbar-appropriate foreground otherwise (theme brushes can mismatch the bar).
+                bool urgent = WidgetAppearanceSettings.ColorCodeText
+                    && row.Source.HasBar
+                    && row.Source.Percent <= WidgetAppearanceSettings.WarningUpperPercent;
+                row.Value.Foreground = urgent
+                    ? LookupBrush(QuotaDisplay.BrushKeyForRemaining(row.Source.Percent)) ?? Foreground
+                    : Foreground;
+                foreach (var marker in row.Markers)
+                    marker.Background = _markerBrush;
+            }
+            ProviderGlyphRenderer.TryApply(BadgeGlyph, _lastResult?.Id ?? ProviderId.Codex, Foreground);
+        }
+
+        public void Apply(UsageResult result, bool force = false)
+        {
+            var signature = BuildRenderSignature(result);
+            if (!force && _lastRenderSignature == signature)
+                return;
+
+            _lastRenderSignature = signature;
+            _lastResult = result;
+            UpdateArmedDot();
+            ToolTipService.SetToolTip(this, BuildQuotaTooltip(result));
+            ApplyTaskbarForeground();
+            // Values restored from the previous session render dimmed until a live fetch confirms them,
+            // so a boot-time snapshot never reads as current data (issue #21).
+            Panel.Opacity = RestingPanelOpacity;
+
+            var widgetName = WidgetDisplayName(result.DisplayName);
+            BadgeText.Text = Abbrev(widgetName);
+
+            if (!WidgetAppearanceSettings.ShowIcon)
+            {
+                BadgeGlyphBox.Visibility = Visibility.Collapsed;
+                BadgeText.Visibility = Visibility.Collapsed;
+            }
+            else if (ProviderGlyphRenderer.TryApply(BadgeGlyph, result.Id, Foreground))
+            {
+                BadgeGlyphBox.Visibility = Visibility.Visible;
+                BadgeText.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                BadgeGlyphBox.Visibility = Visibility.Collapsed;
+                BadgeText.Visibility = Visibility.Visible;
+            }
+
+            if (result.IsPending && result.Fetch is null)
+            {
+                // No fetch has completed yet (first paint after boot). Show a neutral placeholder rather
+                // than the failure rendering — a full red bar with "!" reads as invalid data (issue #21).
+                _rows = UnknownRows(result);
+                RenderRows();
+                return;
+            }
+
+            if (!result.Ok || result.Fetch is null)
+            {
+                // Unknown values: both rows use the same "--" marker with no bars, matching the
+                // first-paint placeholder. The previous rendering (full bar + "!" on the weekly line
+                // only) made the two unknown rows look inconsistent and read as invalid data (issue
+                // #21).
+                _rows = UnknownRows(result);
+                RenderRows();
+                return;
+            }
+
+            var usage = result.Fetch.Usage;
+            _rows = BuildRows(result, usage);
+            if (_rows.Count == 0)
+            {
+                SetActiveToolVisible(false);
+                DesiredLogicalWidth = 0;
+                DesiredHostWidthChanged?.Invoke(DesiredLogicalWidth);
+                return;
+            }
+            SetActiveToolVisible(true);
+            RenderRows();
+            SetBars();
+
+        }
+
+        public void SetActiveToolVisible(bool isVisible)
+        {
+            if (_isActiveToolVisible == isVisible)
+                return;
+
+            _isActiveToolVisible = isVisible;
+            IsHitTestVisible = isVisible;
+            Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private static List<WidgetUsageRow> UnknownRows(UsageResult result)
+            => result.Id == ProviderId.Antigravity
+                ? new()
+                {
+                    new WidgetUsageRow("Gemini", 0, "--", HasBar: false),
+                    new WidgetUsageRow("Claude & GPT", 0, "--", HasBar: false),
+                }
+                : new()
+                {
+                    new WidgetUsageRow(CompactLabel(result.Provider?.SessionLabel ?? "Session"), 0, "--", HasBar: false),
+                    new WidgetUsageRow(CompactLabel(result.Provider?.WeeklyLabel ?? "Weekly"), 0, "--", HasBar: false),
+                };
+
+        /// <summary>The tile's row set, built from the usage snapshot.</summary>
+        private static List<WidgetUsageRow> BuildRows(UsageResult result, UsageSnapshot usage)
+        {
+            var rows = new List<WidgetUsageRow>();
+            if (result.Id == ProviderId.Antigravity)
+            {
+                if (usage.HasPrimaryWindow)
+                {
+                    var geminiLabel = usage.Primary.Label ?? "Gemini";
+                    rows.Add(new WidgetUsageRow(
+                        CompactLabel(geminiLabel),
+                        RemainingPercent(usage.Primary.UsedPercent),
+                        FormatRemainingPercent(usage.Primary.UsedPercent),
+                        usage.Primary.ResetDescription,
+                        ResetAt: usage.Primary.ResetAt));
+                }
+                if (usage.Secondary != null)
+                {
+                    var claudeGptLabel = usage.Secondary.Label ?? "Claude & GPT";
+                    rows.Add(new WidgetUsageRow(
+                        CompactLabel(claudeGptLabel),
+                        RemainingPercent(usage.Secondary.UsedPercent),
+                        FormatRemainingPercent(usage.Secondary.UsedPercent),
+                        usage.Secondary.ResetDescription,
+                        ResetAt: usage.Secondary.ResetAt));
+                }
+                return rows;
+            }
+            // Session meter. Skipped when the provider reported no session window at all (Codex
+            // org/Business plans that only expose credits): otherwise the widget shows a bogus
+            // "Session 0%". Honor the window's Label override.
+            if (usage.HasPrimaryWindow)
+            {
+                var primaryLabel = usage.Primary.Label ?? result.Provider?.SessionLabel ?? "Session";
+                // Spend-limit meter: show the money value "$9.27/$100.00" instead of a bare percent so it
+                // matches Codex's "used/limit credits". The bar tracks remaining %.
+                string primaryValue = usage.Primary.ShowCostValue && usage.Cost is { } spend
+                    ? FormatSpendValue(spend)
+                    : FormatRemainingPercent(usage.Primary.UsedPercent);
+                rows.Add(new WidgetUsageRow(
+                    CompactLabel(primaryLabel),
+                    RemainingPercent(usage.Primary.UsedPercent),
+                    primaryValue,
+                    usage.Primary.ResetDescription,
+                    ResetAt: usage.Primary.ResetAt));
+            }
+            // Weekly meter.
+            if (usage.Secondary != null)
+            {
+                var secondaryLabel = result.Provider?.WeeklyLabel ?? "Weekly";
+                rows.Add(new WidgetUsageRow(
+                    CompactLabel(secondaryLabel),
+                    RemainingPercent(usage.Secondary.UsedPercent),
+                    FormatRemainingPercent(usage.Secondary.UsedPercent),
+                    usage.Secondary.ResetDescription,
+                    ResetAt: usage.Secondary.ResetAt));
+            }
+            if (usage.ModelSpecific != null)
+            {
+                rows.Add(new WidgetUsageRow(
+                    CompactLabel(usage.ModelSpecific.Label ?? "Model"),
+                    RemainingPercent(usage.ModelSpecific.UsedPercent),
+                    FormatRemainingPercent(usage.ModelSpecific.UsedPercent),
+                    usage.ModelSpecific.ResetDescription,
+                    ResetAt: usage.ModelSpecific.ResetAt));
+            }
+            if (usage.Monthly != null)
+            {
+                rows.Add(new WidgetUsageRow(
+                    "Monthly",
+                    RemainingPercent(usage.Monthly.UsedPercent),
+                    FormatRemainingPercent(usage.Monthly.UsedPercent),
+                    usage.Monthly.ResetDescription,
+                    ResetAt: usage.Monthly.ResetAt));
+            }
+            // Codex credits (raw balance, or used/limit when the API reports a real cap). Lets org/
+            // Business plans surface credits in the widget — the only meter they have.
+            if (usage.Cost is { } cost)
+            {
+                if (cost.Limit is { } creditLimit && creditLimit > 0)
+                {
+                    double creditUsed = Math.Max(0, creditLimit - cost.Amount);
+                    rows.Add(new WidgetUsageRow(
+                        "Credits",
+                        RemainingPercent(Math.Clamp(creditUsed / creditLimit * 100, 0, 100)),
+                        FormatCreditsValue(cost)));
+                }
+                else
+                {
+                    // No-cap credits: single tight embedded label ("0 crédits") in the label cell,
+                    // Value empty, HasBar=false. A separate value cell would sit in the far
+                    // bar+value span while the label column stretches to the group's widest label
+                    // (the Resets line), leaving "Crédits         0".
+                    string lowered = AppStrings.Get("Labels.Credits").ToLowerInvariant();
+                    string embedded = $"{FormatCreditsValue(cost)} {lowered}";
+                    rows.Add(new WidgetUsageRow(embedded, 0, string.Empty, HasBar: false));
+                }
+            }
+            // Reset credits share the flyout panel's count wording (Ui.ResetCreditCountOne/Count);
+            // the nearest expiry rides along as the row's reset countdown so both surfaces agree.
+            if (usage.ResetCredits is { AvailableCount: > 0 } resetCredits)
+            {
+                rows.Add(new WidgetUsageRow(
+                    "Resets",
+                    0,
+                    string.Empty,
+                    CountdownFormat.Format(resetCredits.EarliestExpiresAt),
+                    HasBar: false,
+                    ResetAt: resetCredits.EarliestExpiresAt,
+                    LeadingCount: resetCredits.AvailableCount));
+            }
+            rows.AddRange(usage.ExtraRateWindows.Select(w => new WidgetUsageRow(
+                CompactLabel(w.Title),
+                RemainingPercent(w.Window.UsedPercent),
+                FormatRemainingPercent(w.Window.UsedPercent),
+                w.Window.ResetDescription,
+                ResetAt: w.Window.ResetAt)));
+            return rows;
+        }
+
+        internal static IReadOnlyList<string> BuildRowLabelsForTesting(UsageResult result, UsageSnapshot usage)
+            => BuildRows(result, usage).Select(row => row.Label).ToList();
+
+        /// <summary>Rows assumed for a provider whose usage has not been fetched yet.</summary>
+        public const int AssumedRowCount = 2;
+
+        /// <summary>How many rows the Codex tile would render for the given result.</summary>
+        public static int CountRenderedRows(UsageResult result)
+        {
+            if (!result.Ok || result.Fetch is not { } fetch)
+                return AssumedRowCount;
+
+            return Math.Max(1, BuildRows(result, fetch.Usage).Count);
+        }
+
+        /// <summary>
+        /// Width reserve for a "used/limit" credits value, so the column doesn't twitch as the used side
+        /// grows. Sized from the tile's OWN limit — the used side can never be wider than the limit — rather
+        /// than from a fixed worst case: reserving room for "10,000/10,000" on a plan whose limit is 300
+        /// padded the tile by tens of pixels of permanent dead space, which on a crowded taskbar was enough
+        /// to cost the provider its tile entirely.
+        /// </summary>
+        internal static string CreditValueSample(string value)
+        {
+            int slash = value.IndexOf('/');
+            if (slash <= 0 || slash == value.Length - 1)
+                return value;
+
+            var limit = value[(slash + 1)..];
+            return new string('0', limit.Length) + "/" + limit;
+        }
+
+        private static string FormatCreditCount(double value)
+            => value.ToString(value % 1 == 0 ? "N0" : "N1", CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// Number-only credits value for the "Credits" row: the label already names the unit, so the
+        /// "credits" suffix in <see cref="CostSnapshot.Display"/> would repeat it ("Credits |
+        /// 0.00 credits"). Money currencies keep their Display.
+        /// </summary>
+        private static string FormatCreditsValue(CostSnapshot cost)
+            => string.Equals(cost.Currency, "credits", StringComparison.OrdinalIgnoreCase)
+                ? cost.Limit is { } limit && limit > 0
+                    ? $"{FormatCreditCount(cost.Amount)}/{FormatCreditCount(limit)}"
+                    : FormatCreditCount(cost.Amount)
+                : cost.Display;
+
+        /// <summary>Compact "used / limit" money string for a spend-limit meter, e.g. "$9.27/$100".
+        /// Space-free to fit the widget's narrow value column.</summary>
+        private static string FormatSpendValue(CostSnapshot cost)
+        {
+            string Money(double v)
+            {
+                string n = v.ToString(v % 1 == 0 ? "N0" : "N2", CultureInfo.InvariantCulture);
+                return string.Equals(cost.Currency, "USD", StringComparison.OrdinalIgnoreCase) ? $"${n}" : $"{n} {cost.Currency}";
+            }
+            return cost.Limit is { } limit ? $"{Money(cost.Amount)}/{Money(limit)}" : Money(cost.Amount);
+        }
+
+        private static string BuildRenderSignature(UsageResult result)
+        {
+            var parts = new List<string>
+            {
+                result.Id.ToString(),
+                result.DisplayName,
+                result.Error ?? string.Empty,
+                result.IsPending ? "pending" : "settled",
+                result.IsStale ? "stale" : "live",
+                // The tile's colors follow the taskbar theme (SystemUsesLightTheme), so a theme flip
+                // must invalidate an otherwise-identical render (usage data often stays unchanged
+                // between polls; without this the next poll would no-op and the tile would keep its
+                // launch-time foreground forever).
+                Interop.SystemInfos.IsSystemLightThemeUsed() == true ? "light" : "dark",
+            };
+
+            if (result.Fetch is not { } fetch)
+                return string.Join("|", parts);
+
+            var usage = fetch.Usage;
+            parts.Add(fetch.SourceLabel);
+            parts.Add(usage.LoginMethod ?? string.Empty);
+            parts.Add(usage.Email ?? string.Empty);
+            parts.Add(usage.HasPrimaryWindow ? "primary" : "credits-only");
+            parts.Add(usage.Cost?.Display ?? string.Empty);
+            if (usage.AdditionalUsage is { Enabled: true } additional)
+            {
+                parts.Add(additional.SpentUsd.ToString(CultureInfo.InvariantCulture));
+                parts.Add(additional.BudgetUsd?.ToString(CultureInfo.InvariantCulture) ?? string.Empty);
+                parts.Add(additional.IsCredits ? "credits" : "usd");
+            }
+            if (usage.ResetCredits is { } resetCredits)
+            {
+                parts.Add(resetCredits.AvailableCount.ToString(CultureInfo.InvariantCulture));
+                foreach (var credit in resetCredits.Credits)
+                {
+                    parts.Add(credit.Status);
+                    parts.Add(credit.GrantedAt?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
+                    parts.Add(credit.ExpiresAt?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
+                }
+            }
+            AppendRateWindow(parts, usage.Primary);
+            AppendRateWindow(parts, usage.Secondary);
+            AppendRateWindow(parts, usage.ModelSpecific);
+            AppendRateWindow(parts, usage.Monthly);
+            foreach (var extra in usage.ExtraRateWindows)
+            {
+                parts.Add(extra.Id);
+                parts.Add(extra.Title);
+                AppendRateWindow(parts, extra.Window);
+            }
+
+            return string.Join("|", parts);
+        }
+
+        private static void AppendRateWindow(List<string> parts, RateWindow? window)
+        {
+            if (window is null)
+            {
+                parts.Add("null");
+                return;
+            }
+
+            parts.Add(window.UsedPercent.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+            parts.Add(window.WindowMinutes?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty);
+            parts.Add(window.ResetAt?.ToString("O", System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty);
+            parts.Add(window.ResetDescription ?? string.Empty);
+            parts.Add(window.Label ?? string.Empty);
+            parts.Add(window.ShowCostValue ? "cost" : "percent");
+        }
+
+        private static string BaseLabelText(WidgetUsageRow row)
+        {
+            string label = CountPrefix(row);
+            // The expiry countdown joins the label as one unit ("3 Resets 15d"): a separate
+            // reset column would pad to the group's widest label and leave a double-wide gap.
+            if (row.LeadingCount is not null && ResetDisplayText(row) is { Length: > 0 } reset)
+                label += $" {reset}";
+            // Bar-less rows (Credits "0") render the value inline in the label cell, so the
+            // label measurement must include it: otherwise the label column sizes to "Crédits"
+            // alone and clips the inlined "0". Resets rows carry an empty Value and stay as-is.
+            if (!row.HasBar && !string.IsNullOrEmpty(row.Value))
+                label += $" {row.Value}";
+            return label;
+        }
+
+        private static string CountPrefix(WidgetUsageRow row)
+        {
+            // Resets row shares the flyout panel's count wording ("1 reset available" /
+            // "3 resets available") via the same AppStrings keys.
+            if (row.LeadingCount is { } count)
+                return AppStrings.Format(
+                    count == 1 ? "Ui.ResetCreditCountOne" : "Ui.ResetCreditsCount",
+                    count.ToString("N0", CultureInfo.CurrentUICulture));
+            return AppStrings.LocalizeLabel(row.Label);
+        }
+
+        private static double MeasureTextWidth(string text, int fontSize = WidgetFontSize)
+        {
+            var textBlock = new TextBlock
+            {
+                Text = text,
+                FontFamily = new FontFamily("Segoe UI Variable Text"),
+                FontSize = fontSize,
+                FontWeight = Microsoft.UI.Text.FontWeights.Normal,
+            };
+            textBlock.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            return Math.Ceiling(textBlock.DesiredSize.Width);
+        }
+
+        /// <summary>
+        /// Width of a single space: a lone " " TextBlock measures 0 (edge whitespace is
+        /// trimmed), so derive it from the difference between "0 0" and "00". Both inputs
+        /// are Ceiling()-ed, so the difference can quantize to 0 — clamp to at least 1px
+        /// or the count and countdown would join ("3 Resets15d").
+        /// </summary>
+        private static double MeasureSpaceWidth(int fontSize = WidgetFontSize)
+            => Math.Max(1, MeasureTextWidth("0 0", fontSize) - MeasureTextWidth("00", fontSize));
+
+        private static Brush ResetBrush(string resetDescription)
+        {
+            string key = TryParseResetMinutes(resetDescription) switch
+            {
+                <= 30 => "AccentFillColorDefaultBrush",
+                <= 120 => "AccentFillColorSecondaryBrush",
+                _ => "TextFillColorSecondaryBrush",
+            };
+            return LookupBrush(key) ?? new SolidColorBrush(new Windows.UI.Color { A = 255, R = 128, G = 128, B = 128 });
+        }
+
+        private static int? TryParseResetMinutes(string resetDescription)
+        {
+            if (resetDescription == "now")
+                return 0;
+
+            int total = 0;
+            foreach (var part in resetDescription.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (part.Length < 2 || !int.TryParse(part[..^1], out int value))
+                    return null;
+
+                total += part[^1] switch
+                {
+                    'd' => value * 24 * 60,
+                    'h' => value * 60,
+                    'm' => value,
+                    _ => 0,
+                };
+            }
+
+            return total;
+        }
+
+        private static string CompactLabel(string label)
+        {
+            label = label.Trim();
+            return label switch
+            {
+                "Total usage" => "Total",
+                "Auto + Composer Usage" => "Auto+Composer",
+                "API Usage" => "API",
+                "Session" => "Session",
+                "Spark Session" => "Spark Session",
+                _ when label.Contains("gemini", StringComparison.OrdinalIgnoreCase) => "Gemini",
+                _ when label.Contains("claude", StringComparison.OrdinalIgnoreCase) && label.Contains("gpt", StringComparison.OrdinalIgnoreCase) => "Claude & GPT",
+                _ when label.Contains("claude", StringComparison.OrdinalIgnoreCase) => "Claude",
+                _ when label.Contains("github copilot", StringComparison.OrdinalIgnoreCase) => "Copilot",
+                _ => label.Length > 12 ? label[..12] : label,
+            };
+        }
+
+        private sealed record WidgetUsageRow(
+            string Label,
+            double Percent,
+            string Value,
+            string? ResetDescription = null,
+            bool HasBar = true,
+            string? GlyphData = null,
+            DateTimeOffset? ResetAt = null,
+            int? LeadingCount = null);
+
+        private sealed record RenderedRow(
+            WidgetUsageRow Source,
+            Border Track,
+            Border Bar,
+            double BarWidth,
+            FrameworkElement? Label,
+            TextBlock Value,
+            IReadOnlyList<Border> Markers);
+
+        private sealed record WidgetLayoutMetrics(double LabelWidth, double ResetWidth, double BarWidth, double ValueWidth);
+
+        /// <summary>
+        /// The opacity for the result currently shown. Values restored from disk remain dimmed until a live
+        /// fetch confirms them, so a boot-time snapshot never reads as current data.
+        /// </summary>
+        private double RestingPanelOpacity => _lastResult?.IsStale == true ? StaleOpacity : 1.0;
+
+        private void RenderRows()
+        {
+            ClearDynamicContent();
+            ConfigureStaticColumns();
+
+            var rows = CurrentRows();
+
+            // Appearance toggles: ShowProgressBar drops the meter bars (percentages remain),
+            // ShowIcon collapses the badge column entirely.
+            bool showBars = WidgetAppearanceSettings.ShowProgressBar;
+            const bool showPercentages = true;
+            double barWidth = BarColumnLogicalWidth;
+
+            for (int i = 0; i < rows.Count; i++)
+            {
+                int group = i / MaxRowsPerGroup;
+                int row = i % MaxRowsPerGroup;
+                int groupStart = group * MaxRowsPerGroup;
+                int groupCount = Math.Min(MaxRowsPerGroup, rows.Count - groupStart);
+                // Only a tile that holds ONE row overall gets the full-height treatment (the Credits
+                // meter). A trailing lone row in a multi-group tile stays on the top line, level
+                // with the first row of the group beside it — centring it there just reads as misaligned.
+                bool isSingleRowGroup = rows.Count == 1 && groupCount == 1;
+                var layout = CalculateLayoutMetrics(rows, group);
+                int firstColumn = EnsureGroupColumns(group, layout);
+                AddRow(rows[i], isSingleRowGroup ? 0 : row, firstColumn, showBars, showPercentages, barWidth, isSingleRowGroup);
+            }
+
+            ApplyTaskbarForeground();
+            SetBars();
+            DesiredLogicalWidth = CalculateDesiredWidth(rows);
+            DesiredHostWidthChanged?.Invoke(DesiredLogicalWidth);
+        }
+
+        private void ClearDynamicContent()
+        {
+            _renderedRows.Clear();
+            for (int i = Panel.Children.Count - 1; i >= 0; i--)
+            {
+                if (Panel.Children[i] != BadgeHost)
+                    Panel.Children.RemoveAt(i);
+            }
+
+            while (Panel.ColumnDefinitions.Count > 1)
+                Panel.ColumnDefinitions.RemoveAt(1);
+        }
+
+        private void ConfigureStaticColumns()
+        {
+            Panel.ColumnSpacing = PanelColumnSpacing;
+            IconColumn.Width = new GridLength(IconColumnLogicalWidth);
+            BadgeHost.Width = IconColumnLogicalWidth;
+            BadgeHost.Height = IconColumnLogicalWidth;
+            BadgeHost.Visibility = WidgetAppearanceSettings.ShowIcon ? Visibility.Visible : Visibility.Collapsed;
+            Grid.SetColumn(BadgeHost, 0);
+        }
+
+        private int EnsureGroupColumns(int group, WidgetLayoutMetrics layout)
+        {
+            const int columnsPerGroup = 4;
+
+            while (Panel.ColumnDefinitions.Count < 1 + ((group + 1) * columnsPerGroup))
+            {
+                Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.LabelWidth) });
+                Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.ResetWidth) });
+                Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.BarWidth) });
+                Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.ValueWidth) });
+            }
+
+            return 1 + (group * columnsPerGroup);
+        }
+
+        /// <summary>The rows this tile draws — the full Codex row set, or the placeholder until the
+        /// first result lands. Never copies: the measure and render paths both run on every usage publish.
+        /// </summary>
+        private List<WidgetUsageRow> CurrentRows()
+        {
+            var rows = _rows.Count > 0 ? _rows : PlaceholderRows;
+            if (!IsCompact) return rows;
+            // Keep Codex session + weekly visible. Other meters remain in the tooltip/flyout.
+            return rows.Take(2).Select(row => row with
+            {
+                Label = row.Label switch { "Session" => "S", "Weekly" => "W", "Gemini" => "G", "Claude & GPT" => "C", _ => row.Label },
+                ResetAt = null, ResetDescription = null,
+            }).ToList();
+        }
+
+        private static string BuildQuotaTooltip(UsageResult result)
+        {
+            if (result.Fetch is not { } fetch)
+                return result.DisplayName + "\n" + AppStrings.LocalizeStatus(result.Error, "Ui.UsageUnavailable");
+            var usage = fetch.Usage;
+            var lines = new List<string> { result.DisplayName };
+            void Add(string title, RateWindow? window)
+            {
+                if (window is null) return;
+                lines.Add($"{title}: {window.RemainingPercent:0}% · {AppStrings.LocalizeCountdown(CountdownFormat.Format(window.ResetAt))}");
+            }
+            if (usage.HasPrimaryWindow) Add(usage.Primary.Label ?? result.Provider?.SessionLabel ?? "Session", usage.Primary);
+            Add(usage.Secondary?.Label ?? "Weekly", usage.Secondary);
+            foreach (var extra in usage.ExtraRateWindows) Add(extra.Title, extra.Window);
+            if (result.IsStale || !result.Ok) lines.Add(result.Error ?? AppStrings.Get("Ui.UsageUnavailable"));
+            return string.Join("\n", lines);
+        }
+
+        /// <summary>
+        /// Total width of the tile for a given row set: the icon column, then per two-row group a label,
+        /// reset and bar/value column, plus inter-column spacing and the root padding. Mirrors exactly what
+        /// <see cref="ConfigureStaticColumns"/> and <see cref="EnsureGroupColumns"/> build, so a measured
+        /// candidate and the rendered result can never disagree.
+        ///
+        /// Root.Padding is read from the live element rather than mirrored as a constant: the analytic
+        /// width and the XAML have to agree exactly or a column is clipped, and a constant only agrees
+        /// until someone edits the XAML.
+        /// </summary>
+        private int CalculateDesiredWidth(IReadOnlyList<WidgetUsageRow> rows)
+        {
+            const int columnsPerGroup = 4;
+
+            double total = IconColumnLogicalWidth;
+            int columnCount = 1;
+            int groups = (rows.Count + MaxRowsPerGroup - 1) / MaxRowsPerGroup;
+
+            for (int group = 0; group < groups; group++)
+            {
+                var layout = CalculateLayoutMetrics(rows, group);
+                total += layout.LabelWidth + layout.ResetWidth;
+                total += layout.BarWidth + layout.ValueWidth;
+                columnCount += columnsPerGroup;
+            }
+
+            double padding = Root.Padding.Left + Root.Padding.Right + WidthSlack;
+            return (int)Math.Ceiling(total + (Math.Max(0, columnCount - 1) * PanelColumnSpacing) + padding);
+        }
+
+        private static WidgetLayoutMetrics CalculateLayoutMetrics(
+            IReadOnlyList<WidgetUsageRow> rows,
+            int group)
+        {
+            int start = group * MaxRowsPerGroup;
+            int count = Math.Min(MaxRowsPerGroup, rows.Count - start);
+            // Single-row groups (e.g. the Credits meter) render one point larger, so
+            // measure at that size — otherwise the label ("Credits") is sized too narrow and clips.
+            bool isSingleRowGroup = rows.Count == 1 && count == 1;
+            int labelFont = isSingleRowGroup ? WidgetFontSize + 1 : WidgetFontSize;
+            double widestLabel = 0;
+            double widestReset = 0;
+            bool groupHasBar = false;
+            for (int i = 0; i < count; i++)
+            {
+                var row = rows[start + i];
+                groupHasBar |= row.HasBar;
+                double iconWidth = row.GlyphData != null ? RowLabelGlyphReserve : 0;
+                widestLabel = Math.Max(widestLabel, MeasureTextWidth(BaseLabelText(row), labelFont) + iconWidth);
+                // The Resets row embeds its countdown in the label (single TextBlock), so its
+                // reset cell stays empty: skip it here or the group keeps a padded empty column.
+                if (row.LeadingCount is null)
+                {
+                    string resetDisplay = ResetDisplayText(row);
+                    if (resetDisplay.Length > 0)
+                        widestReset = Math.Max(widestReset, MeasureTextWidth(resetDisplay, labelFont));
+                }
+            }
+
+            // Per-group column collapse: groups with no bar row (Credits + Resets) draw
+            // nothing in the bar/value columns — their values render inline in the label
+            // cell (see CreateLabelText) — so collapse both columns to 0. BaseLabelText
+            // already includes the inlined value, so the label column sizes to it.
+            // Bar/percent groups keep the global behavior.
+            bool showBars = WidgetAppearanceSettings.ShowProgressBar;
+            bool barNeeded = groupHasBar && showBars;
+            double groupBarWidth = barNeeded ? BarColumnLogicalWidth : 0;
+            if (!groupHasBar)
+            {
+                return new WidgetLayoutMetrics(
+                    Math.Max(MinLabelColumnWidth, widestLabel + 3),
+                    widestReset == 0 ? MinResetColumnWidth : widestReset + 2,
+                    groupBarWidth,
+                    0);
+            }
+
+            double widestValue = 0;
+            bool needsValueFloor = false;
+            for (int i = 0; i < count; i++)
+            {
+                var row = rows[start + i];
+                widestValue = Math.Max(widestValue, MeasureTextWidth(row.Value, labelFont));
+                if (row.Label == "Credits")
+                    widestValue = Math.Max(widestValue, MeasureTextWidth(CreditValueSample(row.Value), labelFont));
+                // Reserve room for a large dollar balance so amounts like "$1,000.00" aren't clipped.
+                if (row.Label == "Balance")
+                    widestValue = Math.Max(widestValue, MeasureTextWidth("$1,000.00", labelFont));
+                needsValueFloor |= NeedsValueColumnFloor(row);
+            }
+
+            // Adaptive value-column floor: groups whose rows all render narrow text-only values
+            // (e.g. the Credits "0" + Resets "" group) size to content instead of keeping the
+            // 34px floor meant for bars/percents. Bar/percent groups keep the global behavior.
+            double valueWidth = widestValue + 4;
+            if (needsValueFloor)
+                valueWidth = Math.Max(ValueColumnWidth, valueWidth);
+
+            return new WidgetLayoutMetrics(
+                Math.Max(MinLabelColumnWidth, widestLabel + 3),
+                widestReset == 0 ? MinResetColumnWidth : widestReset + 2,
+                groupBarWidth,
+                valueWidth);
+        }
+
+        /// <summary>
+        /// Whether a row needs the value-column minimum: bar rows (or the "--" unknown markers,
+        /// which carry HasBar) and percent / used-limit values that are measured against it.
+        /// Plain narrow text values ("0", "") do not.
+        /// </summary>
+        private static bool NeedsValueColumnFloor(WidgetUsageRow row)
+        {
+            if (row.HasBar)
+                return true;
+            string value = row.Value?.Trim() ?? string.Empty;
+            return value.Contains('%') || value.Contains('/');
+        }
+
+        private void AddRow(
+            WidgetUsageRow usageRow,
+            int row,
+            int firstColumn,
+            bool showBars,
+            bool showPercentages,
+            double barWidth,
+            bool isSingleRowGroup)
+        {
+            int rowSpan = isSingleRowGroup ? MaxRowsPerGroup : 1;
+            int textSize = isSingleRowGroup ? WidgetFontSize + 1 : WidgetFontSize;
+            // Bar rows put the value in its own column; text-only rows (and every row when bars are
+            // hidden) let the value span the bar+value columns. All values are right-aligned so they
+            // share the value column's right edge: percents, used/limit values and plain numbers like
+            // the Credits "0" all end flush-right instead of the text-only value starting at the bar
+            // column's left edge.
+            bool showBar = usageRow.HasBar && showBars;
+            var value = CreateText(
+                usageRow.Value,
+                0.86,
+                TextAlignment.Right,
+                textSize);
+            var reset = CreateResetText(usageRow, textSize);
+
+            FrameworkElement label;
+            if (usageRow.GlyphData != null)
+            {
+                var icon = CreateNormalizedGlyph(usageRow.GlyphData, RowLabelGlyphSize, Foreground, new Thickness(0, 0, 4, 0));
+                var labelText = CreateLabelText(usageRow, textSize);
+                var sp = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children = { icon, labelText },
+                };
+                label = sp;
+            }
+            else
+            {
+                label = CreateLabelText(usageRow, textSize);
+            }
+
+            var track = new Border { CornerRadius = new CornerRadius(2), Opacity = 0.28 };
+            var bar = new Border
+            {
+                Background = LookupBrush("AccentFillColorDefaultBrush") ?? new SolidColorBrush(new Windows.UI.Color { A = 255, R = 128, G = 128, B = 128 }),
+                CornerRadius = new CornerRadius(2),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Width = 0,
+            };
+            var barHost = new Grid
+            {
+                Width = barWidth,
+                Height = isSingleRowGroup ? SingleRowBarHeight : BarHeight,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            barHost.Children.Add(track);
+            barHost.Children.Add(bar);
+
+            // Threshold tick marks: a 1px line at each warning boundary, positioned by pixel offset
+            // since the tile bar has a fixed width. Colored from _markerBrush (theme-counter to the
+            // text, see ApplyTaskbarForeground) so a theme flip recolors the existing lines too.
+            var markers = new List<Border>(QuotaDisplay.WarningThresholds().Count);
+            foreach (int threshold in QuotaDisplay.WarningThresholds())
+            {
+                var marker = new Border
+                {
+                    Width = 1,
+                    Height = barHost.Height,
+                    Background = _markerBrush,
+                    Opacity = 0.45,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Margin = new Thickness(threshold / 100d * barWidth - 0.5, 0, 0, 0),
+                };
+                markers.Add(marker);
+                barHost.Children.Add(marker);
+            }
+
+            value.Visibility = showPercentages ? Visibility.Visible : Visibility.Collapsed;
+            // Bar-less rows (Credits, Resets) carry the value inline in the label cell: the
+            // separate value cell collapses so nothing draws out in the bar+value span.
+            // It stays tracked in _renderedRows for theme updates.
+            if (!usageRow.HasBar)
+                value.Visibility = Visibility.Collapsed;
+            AddToPanel(label, row, firstColumn, rowSpan);
+            AddToPanel(reset, row, firstColumn + 1, rowSpan);
+            if (showBar)
+            {
+                barHost.Visibility = Visibility.Visible;
+                AddToPanel(barHost, row, firstColumn + 2, rowSpan);
+                AddToPanel(value, row, firstColumn + 3, rowSpan);
+            }
+            else
+            {
+                // Text-only rows span the bar column too, right-aligned, so the value ends at the
+                // value column's right edge — flush with the percents above. When bars are hidden that
+                // column is 0-wide and the span is a no-op.
+                barHost.Visibility = Visibility.Collapsed;
+                if (usageRow.HasBar)
+                    AddToPanel(barHost, row, firstColumn + 2, rowSpan);
+                Grid.SetColumnSpan(value, 2);
+                AddToPanel(value, row, firstColumn + 2, rowSpan);
+            }
+
+            _renderedRows.Add(new RenderedRow(usageRow, track, bar, barWidth, label, value, markers));
+        }
+
+        private static FrameworkElement CreateNormalizedGlyph(
+            string glyphData,
+            double size,
+            Brush foreground,
+            Thickness margin)
+        {
+            var path = new Path
+            {
+                Data = ProviderGlyphRenderer.ParseGeometry(glyphData),
+                Fill = foreground,
+            };
+            SetNormalizedGlyphTransform(path);
+
+            var canvas = new Canvas { Width = GlyphViewportSize, Height = GlyphViewportSize };
+            canvas.Children.Add(path);
+
+            return new Viewbox
+            {
+                Width = size,
+                Height = size,
+                Child = canvas,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = margin,
+            };
+        }
+
+        private static void SetNormalizedGlyphTransform(Path path)
+        {
+            var bounds = path.Data?.Bounds ?? Rect.Empty;
+            if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0)
+            {
+                path.RenderTransform = null;
+                return;
+            }
+
+            double scale = NormalizedGlyphExtent / Math.Max(bounds.Width, bounds.Height);
+            path.RenderTransform = new CompositeTransform
+            {
+                ScaleX = scale,
+                ScaleY = scale,
+                TranslateX = (GlyphViewportSize / 2) - ((bounds.X + bounds.Width / 2) * scale),
+                TranslateY = (GlyphViewportSize / 2) - ((bounds.Y + bounds.Height / 2) * scale),
+            };
+        }
+
+        private static TextBlock CreateText(string text, double opacity, TextAlignment alignment, int fontSize = WidgetFontSize) => new()
+        {
+            Text = text,
+            FontFamily = new FontFamily("Segoe UI Variable Text"),
+            FontSize = fontSize,
+            FontWeight = Microsoft.UI.Text.FontWeights.Normal,
+            Opacity = opacity,
+            TextAlignment = alignment,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            HorizontalAlignment = alignment switch
+            {
+                TextAlignment.Center => HorizontalAlignment.Stretch,
+                TextAlignment.Right => HorizontalAlignment.Right,
+                _ => HorizontalAlignment.Left,
+            },
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        private static FrameworkElement CreateLabelText(WidgetUsageRow row, int fontSize = WidgetFontSize)
+        {
+            // Bar-less rows (Credits "0") render the value inline in the label cell: a separate
+            // value column would sit in the far bar+value span while the label column stretches
+            // to the group's widest label (the Resets line), leaving "Crédits         0".
+            // Two TextBlocks in a tight StackPanel rather than Inlines/Run: Run inlines crash
+            // the native MeasureOverride in this unpackaged build. The gap is a measured single
+            // space: a trailing " " inside the first TextBlock gets trimmed by the text layout.
+            // The Resets row renders as a single line ("3 Resets 15d") instead of label + reset
+            // column: a separate column would pad to the group's widest label and leave a
+            // double-wide gap between the count and its countdown.
+            bool inlineValue = !row.HasBar && !string.IsNullOrEmpty(row.Value);
+            if (row.LeadingCount is not null && ResetDisplayText(row) is { Length: > 0 } reset)
+            {
+                var countPart = CreateText(CountPrefix(row), 0.78, TextAlignment.Left, fontSize);
+                countPart.TextTrimming = TextTrimming.None;
+                var resetPart = CreateText(reset, 0.78, TextAlignment.Left, fontSize);
+                resetPart.TextTrimming = TextTrimming.None;
+                resetPart.Foreground = ResetBrushFor(row);
+                var panel = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = MeasureSpaceWidth(fontSize),
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children = { countPart, resetPart },
+                };
+                if (inlineValue)
+                {
+                    var valuePart = CreateText(row.Value, 0.86, TextAlignment.Left, fontSize);
+                    valuePart.TextTrimming = TextTrimming.None;
+                    panel.Children.Add(valuePart);
+                }
+                return panel;
+            }
+
+            if (row.LeadingCount is not null)
+            {
+                var countOnly = CreateText(CountPrefix(row), 0.78, TextAlignment.Left, fontSize);
+                countOnly.TextTrimming = TextTrimming.None;
+                if (!inlineValue)
+                    return countOnly;
+                var valueOnlyPart = CreateText(row.Value, 0.86, TextAlignment.Left, fontSize);
+                valueOnlyPart.TextTrimming = TextTrimming.None;
+                return new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = MeasureSpaceWidth(fontSize),
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children = { countOnly, valueOnlyPart },
+                };
+            }
+
+            var baseLabel = CreateText(CountPrefix(row), 0.78, TextAlignment.Left, fontSize);
+            baseLabel.TextTrimming = TextTrimming.None;
+            if (!inlineValue)
+                return baseLabel;
+            var inlineValuePart = CreateText(row.Value, 0.86, TextAlignment.Left, fontSize);
+            inlineValuePart.TextTrimming = TextTrimming.None;
+            return new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = MeasureSpaceWidth(fontSize),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children = { baseLabel, inlineValuePart },
+            };
+        }
+
+        private static TextBlock CreateResetText(WidgetUsageRow row, int fontSize = WidgetFontSize)
+        {
+            // The Resets row embeds its countdown in the label (no separate reset column), so its
+            // cell stays empty; other rows render the countdown beside the label instead.
+            if (row.LeadingCount is not null)
+                return CreateText("", 0.9, TextAlignment.Left, fontSize);
+
+            string display = ResetDisplayText(row);
+            if (display.Length == 0)
+                return CreateText("", 0.9, TextAlignment.Left, fontSize);
+
+            var reset = CreateText(display, 0.9, TextAlignment.Left, fontSize);
+            // A reset inside the imminent window shows its absolute date and gets the accent brush so
+            // it stands out; countdowns keep the urgency-colored treatment.
+            reset.Foreground = ResetBrushFor(row);
+            reset.TextTrimming = TextTrimming.None;
+            return reset;
+        }
+
+        /// <summary>
+        /// Foreground for a row's reset countdown: the accent brush when the reset is imminent
+        /// (it shows the absolute local time), the urgency color otherwise. Shared by the plain
+        /// reset cell and the countdown Run embedded in the Resets label.
+        /// </summary>
+        private static Brush ResetBrushFor(WidgetUsageRow row)
+            => ResetDateDisplay.IsImminent(row.ResetAt, DateTimeOffset.UtcNow)
+                ? LookupBrush("AccentFillColorDefaultBrush") ?? ResetBrush(row.ResetDescription ?? string.Empty)
+                : ResetBrush(row.ResetDescription ?? string.Empty);
+
+        /// <summary>
+        /// Reset text for the tile: the absolute local date when the reset is about to expire (within
+        /// 24h), otherwise the countdown ("6d 23h"). Shared by rendering and width measurement so the
+        /// tile never clips the date form. Parens were dropped: the imminent date is already drawn in
+        /// the accent color, and the countdown reads fine bare.
+        /// </summary>
+        private static string ResetDisplayText(WidgetUsageRow row)
+        {
+            if (ResetDateDisplay.IsImminent(row.ResetAt, DateTimeOffset.UtcNow) && row.ResetAt is { } resetWhen)
+                return ResetDateDisplay.FormatLocalTime(resetWhen);
+            if (string.IsNullOrWhiteSpace(row.ResetDescription))
+                return string.Empty;
+            return AppStrings.LocalizeCountdown(row.ResetDescription);
+        }
+
+        private void AddToPanel(FrameworkElement element, int row, int column, int rowSpan = 1)
+        {
+            Grid.SetRow(element, row);
+            Grid.SetRowSpan(element, rowSpan);
+            Grid.SetColumn(element, column);
+            Panel.Children.Add(element);
+        }
+
+
+        private void SetBars()
+        {
+            foreach (var row in _renderedRows)
+                SetBar(row.Bar, row.Source.Percent, row.BarWidth);
+        }
+
+        private static void SetBar(FrameworkElement bar, double remainingPercent, double maxWidth)
+        {
+            bar.Width = Math.Clamp(remainingPercent, 0, 100) * (maxWidth / 100d);
+            if (bar is not Border border)
+                return;
+
+            // Urgency fill only when color coding is on, matching the percent text and the flyout's
+            // bars; plain accent otherwise. Opacity is reset because SetBars re-runs on every render
+            // and a stale 0.78 would linger after the toggle flips off.
+            string key = WidgetAppearanceSettings.ColorCodeText
+                ? GetRemainingBrushResourceKey(remainingPercent)
+                : "AccentFillColorDefaultBrush";
+            border.Background = LookupBrush(key) ?? border.Background;
+            border.Opacity = 1;
+        }
+
+        private static Brush? LookupBrush(string key)
+        {
+            try
+            {
+                if (Application.Current?.Resources.TryGetValue(key, out object? value) == true && value is Brush brush)
+                    return brush;
+            }
+            catch { /* theme lookup is best effort */ }
+            return null;
+        }
+
+        private static string Abbrev(string name)
+            => string.IsNullOrEmpty(name) ? "?" : name.Substring(0, 1).ToUpperInvariant();
+
+        /// <summary>Remaining quota percent (100 − used), clamped to 0..100. Codex's UI shows remaining.</summary>
+        private static double RemainingPercent(double usedPercent) => QuotaDisplay.RemainingPercent(usedPercent);
+
+        private static string FormatRemainingPercent(double usedPercent) => $"{RemainingPercent(usedPercent):0}%";
+
+        /// <summary>Brush key for a remaining percent: critical red at or below the configured lower
+        /// threshold, caution amber at or below the upper threshold (defaults 20 and 50).</summary>
+        private static string GetRemainingBrushResourceKey(double remainingPercent)
+            => QuotaDisplay.BrushKeyForRemaining(remainingPercent);
+    }
+}

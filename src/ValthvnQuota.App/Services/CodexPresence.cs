@@ -1,0 +1,115 @@
+﻿using System;
+using System.Threading;
+
+namespace ValthvnQuota.Services;
+
+/// <summary>
+/// Lightweight liveness probe for the local Codex tooling: any running <c>codex</c> process (CLI) or
+/// a visible Codex/ChatGPT desktop window counts as "running". Polled on a slow timer so the widget
+/// and flyout can surface "Codex isn't running" without paying a process/desktop probe on every usage
+/// publish. The event has no payload when only the value changed.
+/// </summary>
+public sealed class CodexPresence
+{
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
+
+    private readonly object _gate = new();
+    private Timer? _timer;
+    private bool _isRunning = true;
+
+    public static CodexPresence Instance { get; } = new();
+
+    private CodexPresence()
+    {
+    }
+
+    /// <summary>True until the first probe has run — the app assumes Codex is present at boot so a
+    /// startup race never flashes a false "down" state.</summary>
+    public bool IsRunning
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _isRunning;
+            }
+        }
+    }
+
+    /// <summary>Raised (on the poller thread) only when the running state actually changes.</summary>
+    public event Action<bool>? Changed;
+
+    public void Start()
+    {
+        // P2: guard with the existing gate — double-Start must not leak a second timer.
+        lock (_gate)
+        {
+            if (_timer != null)
+                return;
+
+            _timer = new Timer(_ => Poll(), null, TimeSpan.Zero, PollInterval);
+        }
+    }
+
+    public void Stop()
+    {
+        // P2: Stop races Poll safely — Poll only touches _timer via Start/Stop under the gate;
+        // the timer callback never dereferences _timer itself.
+        Timer? timer;
+        lock (_gate)
+        {
+            timer = _timer;
+            _timer = null;
+        }
+
+        timer?.Dispose();
+    }
+
+    private void Poll()
+    {
+        // Per-probe try/catch — a failing probe preserves the previous state instead of
+        // reporting a false "down".
+        bool processRunning = ProbeSafely(UsageCoordinator.IsCodexProcessRunning);
+        bool windowFound = ProbeSafely(() => CodexAppSender.FindCodexWindow() != IntPtr.Zero);
+
+        bool running = processRunning || windowFound;
+
+        lock (_gate)
+        {
+            if (_isRunning == running)
+                return;
+            _isRunning = running;
+        }
+
+        try
+        {
+            Changed?.Invoke(running);
+        }
+        catch
+        {
+            // One dead subscriber must not kill the poller.
+        }
+    }
+
+    /// <summary>Last known running state under the gate.</summary>
+    private bool LastKnownLocked()
+    {
+        lock (_gate)
+        {
+            return _isRunning;
+        }
+    }
+
+    /// <summary>Runs a probe, preserving the previous state when the probe throws.</summary>
+    private bool ProbeSafely(Func<bool> probe)
+    {
+        try
+        {
+            return probe();
+        }
+        catch
+        {
+            return LastKnownLocked();
+        }
+    }
+}

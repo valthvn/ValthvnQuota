@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <data name="Ui.Settings" xml:space="preserve"><value>설정</value></data>
+  <data name="Ui.ShowHideAppearanceOptions" xml:space="preserve"><value>모양 옵션 표시 또는 숨기기</value></data>
+  <data name="Ui.RefreshUsage" xml:space="preserve"><value>사용량 새로 고침</value></data>
+  <data name="Ui.Close" xml:space="preserve"><value>닫기</value></data>
+  <data name="Ui.TokenActivity" xml:space="preserve"><value>토큰 사용량</value></data>
+  <data name="Ui.Refreshing" xml:space="preserve"><value>새로 고치는 중…</value></data>
+  <data name="Ui.NoUsageDataYet" xml:space="preserve"><value>아직 사용 데이터가 없습니다.</value></data>
+  <data name="Ui.LastUpdatedDash" xml:space="preserve"><value>마지막 업데이트 ·</value></data>
+  <data name="Ui.UsageUnavailable" xml:space="preserve"><value>사용량을 사용할 수 없음</value></data>
+  <data name="Ui.ProfileAsOf" xml:space="preserve"><value>{0} 기준</value></data>
+  <data name="Ui.ProfileAsOfLive" xml:space="preserve"><value>{0} 기준 · 로컬 세션</value></data>
+  <data name="Ui.LiveLocalSessions" xml:space="preserve"><value>로컬 세션</value></data>
+  <data name="Ui.TokenDetail" xml:space="preserve"><value>{0} · {1} 토큰</value></data>
+  <data name="Ui.ResetsOn" xml:space="preserve"><value>{0}에 재설정</value></data>
+  <data name="Ui.ResetsIn" xml:space="preserve"><value>{0} 후 재설정</value></data>
+  <data name="Ui.ResetCreditsCount" xml:space="preserve"><value>{0}개의 리셋</value></data>
+  <data name="Ui.OldestExpiresOn" xml:space="preserve"><value>가장 오래된 항목 {0}에 만료</value></data>
+  <data name="Ui.OldestExpiresIn" xml:space="preserve"><value>가장 오래된 항목 {0} 후 만료</value></data>
+  <data name="Ui.ExpiresOn" xml:space="preserve"><value>{0}에 만료</value></data>
+  <data name="Ui.ExpiresIn" xml:space="preserve"><value>{0} 후 만료</value></data>
+  <data name="Ui.ResetCreditCountOne" xml:space="preserve"><value>{0}개의 리셋</value></data>
+  <data name="Ui.LastUpdatedAt" xml:space="preserve"><value>마지막 업데이트 {0}</value></data>
+  <data name="Ui.LastUpdatedStale" xml:space="preserve"><value>마지막 업데이트 {0} (오래됨)</value></data>
+  <data name="Ui.RefreshingSuffix" xml:space="preserve"><value> · 새로 고치는 중…</value></data>
+  <data name="Ui.AppearanceIcon" xml:space="preserve"><value>아이콘</value></data>
+  <data name="Ui.AppearanceBars" xml:space="preserve"><value>막대</value></data>
+  <data name="Ui.AppearanceColorPercent" xml:space="preserve"><value>색상 %</value></data>
+  <data name="Ui.WarnBelowPercent" xml:space="preserve"><value>% 미만에서 경고</value></data>
+  <data name="Ui.WorkdayHours" xml:space="preserve"><value>작업 시간</value></data>
+  <data name="Ui.ShowBadgeTooltip" xml:space="preserve"><value>작업 표시줄 타일에 Codex 배지 표시</value></data>
+  <data name="Ui.ShowBarsTooltip" xml:space="preserve"><value>작업 표시줄 타일에 진행률 표시줄 표시; 백분율은 항상 표시</value></data>
+  <data name="Ui.ShowColorTooltip" xml:space="preserve"><value>남은 백분율 색상 지정: 50% 이하는 주황색, 20% 이하는 빨간색</value></data>
+  <data name="Ui.CautionTooltip" xml:space="preserve"><value>남은 백분율이 이 값 미만이면 주의</value></data>
+  <data name="Ui.CriticalTooltip" xml:space="preserve"><value>남은 백분율이 이 값 미만이면 위험</value></data>
+  <data name="Ui.WorkdayHoursTooltip" xml:space="preserve"><value>24시간 할당량 기준 하루 동안 가정하는 코딩 시간</value></data>
+  <data name="Ui.AppearanceImminentTime" xml:space="preserve"><value>정확한 시간</value></data>
+  <data name="Ui.ImminentTimeTooltip" xml:space="preserve"><value>리셋 24시간 이내에는 카운트다운 대신 정확한 현지 시간을 표시합니다</value></data>
+  <data name="Labels.Session" xml:space="preserve"><value>세션</value></data>
+  <data name="Labels.Weekly" xml:space="preserve"><value>주간</value></data>
+  <data name="Labels.Monthly" xml:space="preserve"><value>월간</value></data>
+  <data name="Labels.CodeReview" xml:space="preserve"><value>코드 검토</value></data>
+  <data name="Labels.Credits" xml:space="preserve"><value>크레딧</value></data>
+  <data name="Labels.Resets" xml:space="preserve"><value>재설정</value></data>
+  <data name="Labels.Usage" xml:space="preserve"><value>사용량</value></data>
+  <data name="Labels.Model" xml:space="preserve"><value>모델</value></data>
+  <data name="Labels.SparkSession" xml:space="preserve"><value>Spark 세션</value></data>
+  <data name="Labels.SparkWeekly" xml:space="preserve"><value>Spark 주간</value></data>
+  <data name="Labels.Total" xml:space="preserve"><value>합계</value></data>
+  <data name="Labels.AutoComposer" xml:space="preserve"><value>Auto+Composer</value></data>
+  <data name="Labels.Api" xml:space="preserve"><value>API</value></data>
+  <data name="Plan.Guest" xml:space="preserve"><value>게스트</value></data>
+  <data name="Plan.Free" xml:space="preserve"><value>무료</value></data>
+  <data name="Plan.Business" xml:space="preserve"><value>Business</value></data>
+  <data name="Plan.Enterprise" xml:space="preserve"><value>Enterprise</value></data>
+  <data name="Plan.Education" xml:space="preserve"><value>교육</value></data>
+  <data name="Time.Now" xml:space="preserve"><value>지금</value></data>
+  <data name="Time.Day" xml:space="preserve"><value>일</value></data>
+  <data name="Time.Hour" xml:space="preserve"><value>시간</value></data>
+  <data name="Time.Minute" xml:space="preserve"><value>분</value></data>
+  <data name="Time.UnitSeparator" xml:space="preserve"><value> </value></data>
+  <data name="Widget.Loading" xml:space="preserve"><value>로드 중…</value></data>
+  <data name="Widget.LoadingActiveProvider" xml:space="preserve"><value>활성 공급자 로드 중…</value></data>
+  <data name="Widget.Unavailable" xml:space="preserve"><value>사용할 수 없음</value></data>
+  <data name="Pace.CapReached" xml:space="preserve"><value>페이스 · 한도 도달 · {0}에 재설정</value></data>
+  <data name="Pace.CapBeforeReset" xml:space="preserve"><value>페이스 ~{0}% 할당량/일 → 한도 {1} (~{2:0.#}일)</value></data>
+  <data name="Pace.ResetsBeforeCap" xml:space="preserve"><value>페이스 ~{0}% 할당량/일 · 한도 도달 전에 재설정</value></data>
+  <data name="AutoSend.Arm" xml:space="preserve"><value>세션 재설정 시 입력한 프롬프트 보내기</value></data>
+  <data name="AutoSend.ArmTooltip" xml:space="preserve"><value>다음 세션 재설정 시 Codex의 보내기 버튼을 한 번 눌러 채팅에 입력한 프롬프트를 제출합니다</value></data>
+  <data name="AutoSend.ArmedTooltip" xml:space="preserve"><value>자동 전송 활성화됨: 다음 세션 재설정 시 입력한 프롬프트를 제출합니다</value></data>
+  <data name="AutoSend.SkipWeekly" xml:space="preserve"><value>주간 한도도 재설정되면 보내지 않음</value></data>
+  <data name="AutoSend.SkipWeeklyTooltip" xml:space="preserve"><value>주간 한도가 동시에 재설정되면 보내기를 건너뜁니다</value></data>
+  <data name="AutoSend.StatusIdle" xml:space="preserve"><value>자동 전송이 활성화되지 않음</value></data>
+  <data name="AutoSend.StatusArmed" xml:space="preserve"><value>자동 전송 활성화됨: 다음 세션 재설정 시 실행됨 ({0})</value></data>
+  <data name="AutoSend.StatusConfirming" xml:space="preserve"><value>자동 전송 활성화됨: 재설정 확인 중…</value></data>
+  <data name="AutoSend.StatusSent" xml:space="preserve"><value>자동 전송: {0}에 프롬프트 전송됨</value></data>
+  <data name="AutoSend.StatusSkippedWeekly" xml:space="preserve"><value>자동 전송이 {0}에 건너뜀: 주간 한도도 재설정됨</value></data>
+  <data name="AutoSend.StatusEmptyPrompt" xml:space="preserve"><value>자동 전송이 {0}에 건너뜀: 채팅 입력이 비어 있었음</value></data>
+  <data name="AutoSend.StatusNoWindow" xml:space="preserve"><value>자동 전송이 {0}에 실패: Codex 창을 찾을 수 없음</value></data>
+  <data name="AutoSend.StatusNoButton" xml:space="preserve"><value>자동 전송이 {0}에 실패: 보내기 버튼을 찾을 수 없음</value></data>
+  <data name="AutoSend.StatusFailed" xml:space="preserve"><value>자동 전송이 {0}에 실패</value></data>
+  <data name="AutoSend.StatusNoReset" xml:space="preserve"><value>자동 전송이 {0}에 중지됨: 재설정이 감지되지 않음</value></data>
+  <data name="AutoSend.StatusArmRejected" xml:space="preserve"><value>자동 전송을 활성화할 수 없음: 세션 재설정 시간이 아직 없습니다</value></data>
+  <data name="Codex.NotRunning" xml:space="preserve"><value>Codex가 실행되고 있지 않습니다</value></data>
+  <data name="Codex.NotRunningDetail" xml:space="preserve"><value>다음 재설정 시 자동 전송이 보내기 버튼을 누를 수 있도록 Codex 앱을 여세요.</value></data>
+  <data name="Ui.BothCompact" xml:space="preserve">
+    <value>Both · compact</value>
+  </data>
+  <data name="Ui.QuotaProvider" xml:space="preserve">
+    <value>Quota displayed in the taskbar</value>
+  </data>
+  <data name="Antigravity.Start" xml:space="preserve">
+    <value>Open Antigravity and sign in to read your quota.</value>
+  </data>
+  <data name="Antigravity.NoQuota" xml:space="preserve">
+    <value>Antigravity returned no readable model quotas. Check that you are signed in.</value>
+  </data>
+  <data name="Antigravity.Unavailable" xml:space="preserve">
+    <value>Cannot reach the local Antigravity server. Restart Antigravity, then refresh.</value>
+  </data>
+  <data name="Antigravity.LimitingHint" xml:space="preserve">
+    <value>AG shows the model with the least quota remaining. All model quotas are listed below.</value>
+  </data>
+</root>

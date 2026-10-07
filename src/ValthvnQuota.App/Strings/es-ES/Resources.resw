@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <data name="Ui.Settings" xml:space="preserve"><value>Ajustes</value></data>
+  <data name="Ui.ShowHideAppearanceOptions" xml:space="preserve"><value>Mostrar u ocultar las opciones de apariencia</value></data>
+  <data name="Ui.RefreshUsage" xml:space="preserve"><value>Actualizar uso</value></data>
+  <data name="Ui.Close" xml:space="preserve"><value>Cerrar</value></data>
+  <data name="Ui.TokenActivity" xml:space="preserve"><value>Actividad de tokens</value></data>
+  <data name="Ui.Refreshing" xml:space="preserve"><value>Actualizando…</value></data>
+  <data name="Ui.NoUsageDataYet" xml:space="preserve"><value>Aún no hay datos de uso.</value></data>
+  <data name="Ui.LastUpdatedDash" xml:space="preserve"><value>Última actualización ·</value></data>
+  <data name="Ui.UsageUnavailable" xml:space="preserve"><value>Uso no disponible</value></data>
+  <data name="Ui.ProfileAsOf" xml:space="preserve"><value>a fecha de {0}</value></data>
+  <data name="Ui.ProfileAsOfLive" xml:space="preserve"><value>a fecha de {0} · sesiones locales</value></data>
+  <data name="Ui.LiveLocalSessions" xml:space="preserve"><value>sesiones locales</value></data>
+  <data name="Ui.TokenDetail" xml:space="preserve"><value>{0} · {1} tokens</value></data>
+  <data name="Ui.ResetsOn" xml:space="preserve"><value>se reinicia a las {0}</value></data>
+  <data name="Ui.ResetsIn" xml:space="preserve"><value>se reinicia en {0}</value></data>
+  <data name="Ui.ResetCreditsCount" xml:space="preserve"><value>{0} reinicios</value></data>
+  <data name="Ui.OldestExpiresOn" xml:space="preserve"><value>el más antiguo caduca a las {0}</value></data>
+  <data name="Ui.OldestExpiresIn" xml:space="preserve"><value>el más antiguo caduca en {0}</value></data>
+  <data name="Ui.ExpiresOn" xml:space="preserve"><value>caduca a las {0}</value></data>
+  <data name="Ui.ExpiresIn" xml:space="preserve"><value>caduca en {0}</value></data>
+  <data name="Ui.ResetCreditCountOne" xml:space="preserve"><value>{0} reinicio</value></data>
+  <data name="Ui.LastUpdatedAt" xml:space="preserve"><value>Última actualización {0}</value></data>
+  <data name="Ui.LastUpdatedStale" xml:space="preserve"><value>Última actualización {0} (obsoleta)</value></data>
+  <data name="Ui.RefreshingSuffix" xml:space="preserve"><value> · actualizando…</value></data>
+  <data name="Ui.AppearanceIcon" xml:space="preserve"><value>Icono</value></data>
+  <data name="Ui.AppearanceBars" xml:space="preserve"><value>Barras</value></data>
+  <data name="Ui.AppearanceColorPercent" xml:space="preserve"><value>Color %</value></data>
+  <data name="Ui.WarnBelowPercent" xml:space="preserve"><value>Avisar por debajo de %</value></data>
+  <data name="Ui.WorkdayHours" xml:space="preserve"><value>Horas de trabajo</value></data>
+  <data name="Ui.ShowBadgeTooltip" xml:space="preserve"><value>Mostrar la insignia de Codex en el mosaico de la barra de tareas</value></data>
+  <data name="Ui.ShowBarsTooltip" xml:space="preserve"><value>Mostrar las barras de progreso en el mosaico de la barra de tareas; los porcentajes siempre se muestran</value></data>
+  <data name="Ui.ShowColorTooltip" xml:space="preserve"><value>Colorear el porcentaje restante: naranja al 50 % o menos, rojo al 20 % o menos</value></data>
+  <data name="Ui.CautionTooltip" xml:space="preserve"><value>Precaución (naranja) por debajo de este porcentaje restante</value></data>
+  <data name="Ui.CriticalTooltip" xml:space="preserve"><value>Crítico (rojo) por debajo de este porcentaje restante</value></data>
+  <data name="Ui.WorkdayHoursTooltip" xml:space="preserve"><value>Horas de programación estimadas en cada día de cuota de 24 horas</value></data>
+  <data name="Ui.AppearanceImminentTime" xml:space="preserve"><value>Hora exacta</value></data>
+  <data name="Ui.ImminentTimeTooltip" xml:space="preserve"><value>A menos de 24 horas de un reinicio, muestra la hora local exacta en lugar de la cuenta atrás</value></data>
+  <data name="Labels.Session" xml:space="preserve"><value>Sesión</value></data>
+  <data name="Labels.Weekly" xml:space="preserve"><value>Semanal</value></data>
+  <data name="Labels.Monthly" xml:space="preserve"><value>Mensual</value></data>
+  <data name="Labels.CodeReview" xml:space="preserve"><value>Revisión de código</value></data>
+  <data name="Labels.Credits" xml:space="preserve"><value>Créditos</value></data>
+  <data name="Labels.Resets" xml:space="preserve"><value>Reinicios</value></data>
+  <data name="Labels.Usage" xml:space="preserve"><value>Uso</value></data>
+  <data name="Labels.Model" xml:space="preserve"><value>Modelo</value></data>
+  <data name="Labels.SparkSession" xml:space="preserve"><value>Sesión de Spark</value></data>
+  <data name="Labels.SparkWeekly" xml:space="preserve"><value>Spark semanal</value></data>
+  <data name="Labels.Total" xml:space="preserve"><value>Total</value></data>
+  <data name="Labels.AutoComposer" xml:space="preserve"><value>Auto+Composer</value></data>
+  <data name="Labels.Api" xml:space="preserve"><value>API</value></data>
+  <data name="Plan.Guest" xml:space="preserve"><value>Invitado</value></data>
+  <data name="Plan.Free" xml:space="preserve"><value>Gratis</value></data>
+  <data name="Plan.Business" xml:space="preserve"><value>Business</value></data>
+  <data name="Plan.Enterprise" xml:space="preserve"><value>Enterprise</value></data>
+  <data name="Plan.Education" xml:space="preserve"><value>Educación</value></data>
+  <data name="Time.Now" xml:space="preserve"><value>ahora</value></data>
+  <data name="Time.Day" xml:space="preserve"><value>d</value></data>
+  <data name="Time.Hour" xml:space="preserve"><value>h</value></data>
+  <data name="Time.Minute" xml:space="preserve"><value>min</value></data>
+  <data name="Time.UnitSeparator" xml:space="preserve"><value> </value></data>
+  <data name="Widget.Loading" xml:space="preserve"><value>Cargando…</value></data>
+  <data name="Widget.LoadingActiveProvider" xml:space="preserve"><value>Cargando el proveedor activo…</value></data>
+  <data name="Widget.Unavailable" xml:space="preserve"><value>No disponible</value></data>
+  <data name="Pace.CapReached" xml:space="preserve"><value>Ritmo · límite alcanzado · se reinicia el {0}</value></data>
+  <data name="Pace.CapBeforeReset" xml:space="preserve"><value>Ritmo ~{0}% de la cuota/día → límite {1} (~{2:0.#} d)</value></data>
+  <data name="Pace.ResetsBeforeCap" xml:space="preserve"><value>Ritmo ~{0}% de la cuota/día · se reinicia antes del límite</value></data>
+  <data name="AutoSend.Arm" xml:space="preserve"><value>Enviar el mensaje escrito cuando se reinicie la sesión</value></data>
+  <data name="AutoSend.ArmTooltip" xml:space="preserve"><value>En el próximo reinicio de sesión, pulsa una vez el botón de enviar de Codex para enviar el mensaje que tengas escrito en el chat</value></data>
+  <data name="AutoSend.ArmedTooltip" xml:space="preserve"><value>Envío automático activado: enviará el mensaje escrito en el próximo reinicio de sesión</value></data>
+  <data name="AutoSend.SkipWeekly" xml:space="preserve"><value>No si el límite semanal también se reinicia</value></data>
+  <data name="AutoSend.SkipWeeklyTooltip" xml:space="preserve"><value>Omitir el envío cuando el límite semanal se reinicia al mismo tiempo</value></data>
+  <data name="AutoSend.StatusIdle" xml:space="preserve"><value>Envío automático no activado</value></data>
+  <data name="AutoSend.StatusArmed" xml:space="preserve"><value>Envío automático activado: se dispara en el próximo reinicio de sesión ({0})</value></data>
+  <data name="AutoSend.StatusConfirming" xml:space="preserve"><value>Envío automático activado: confirmando el reinicio…</value></data>
+  <data name="AutoSend.StatusSent" xml:space="preserve"><value>Envío automático: mensaje enviado a las {0}</value></data>
+  <data name="AutoSend.StatusSkippedWeekly" xml:space="preserve"><value>Envío automático omitido a las {0}: el límite semanal también se reinició</value></data>
+  <data name="AutoSend.StatusEmptyPrompt" xml:space="preserve"><value>Envío automático omitido a las {0}: el campo de chat estaba vacío</value></data>
+  <data name="AutoSend.StatusNoWindow" xml:space="preserve"><value>Envío automático falló a las {0}: no se encontró la ventana de Codex</value></data>
+  <data name="AutoSend.StatusNoButton" xml:space="preserve"><value>Envío automático falló a las {0}: no se encontró el botón de enviar</value></data>
+  <data name="AutoSend.StatusFailed" xml:space="preserve"><value>Envío automático falló a las {0}</value></data>
+  <data name="AutoSend.StatusNoReset" xml:space="preserve"><value>Envío automático detenido a las {0}: no se observó ningún reinicio</value></data>
+  <data name="AutoSend.StatusArmRejected" xml:space="preserve"><value>No se pudo activar el envío automático: aún no hay hora de reinicio de sesión disponible</value></data>
+  <data name="Codex.NotRunning" xml:space="preserve"><value>Codex no se está ejecutando</value></data>
+  <data name="Codex.NotRunningDetail" xml:space="preserve"><value>Abre la aplicación Codex para que el envío automático pulse Enviar en el próximo reinicio.</value></data>
+  <data name="Ui.BothCompact" xml:space="preserve">
+    <value>Both · compact</value>
+  </data>
+  <data name="Ui.QuotaProvider" xml:space="preserve">
+    <value>Quota displayed in the taskbar</value>
+  </data>
+  <data name="Antigravity.Start" xml:space="preserve">
+    <value>Open Antigravity and sign in to read your quota.</value>
+  </data>
+  <data name="Antigravity.NoQuota" xml:space="preserve">
+    <value>Antigravity returned no readable model quotas. Check that you are signed in.</value>
+  </data>
+  <data name="Antigravity.Unavailable" xml:space="preserve">
+    <value>Cannot reach the local Antigravity server. Restart Antigravity, then refresh.</value>
+  </data>
+  <data name="Antigravity.LimitingHint" xml:space="preserve">
+    <value>AG shows the model with the least quota remaining. All model quotas are listed below.</value>
+  </data>
+</root>

@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <data name="Ui.Settings" xml:space="preserve"><value>Settings</value></data>
+  <data name="Ui.ShowHideAppearanceOptions" xml:space="preserve"><value>Show or hide appearance options</value></data>
+  <data name="Ui.RefreshUsage" xml:space="preserve"><value>Refresh usage</value></data>
+  <data name="Ui.Close" xml:space="preserve"><value>Close</value></data>
+  <data name="Ui.TokenActivity" xml:space="preserve"><value>Token activity</value></data>
+  <data name="Ui.Refreshing" xml:space="preserve"><value>Refreshing…</value></data>
+  <data name="Ui.NoUsageDataYet" xml:space="preserve"><value>No usage data yet.</value></data>
+  <data name="Ui.LastUpdatedDash" xml:space="preserve"><value>Last updated ·</value></data>
+  <data name="Ui.UsageUnavailable" xml:space="preserve"><value>Usage unavailable</value></data>
+  <data name="Ui.ProfileAsOf" xml:space="preserve"><value>as of {0}</value></data>
+  <data name="Ui.ProfileAsOfLive" xml:space="preserve"><value>as of {0} · local sessions</value></data>
+  <data name="Ui.LiveLocalSessions" xml:space="preserve"><value>local sessions</value></data>
+  <data name="Ui.TokenDetail" xml:space="preserve"><value>{0} · {1} tokens</value></data>
+  <data name="Ui.ResetsOn" xml:space="preserve"><value>resets {0}</value></data>
+  <data name="Ui.ResetsIn" xml:space="preserve"><value>resets in {0}</value></data>
+  <data name="Ui.ResetCreditsCount" xml:space="preserve"><value>{0} resets</value></data>
+  <data name="Ui.OldestExpiresOn" xml:space="preserve"><value>oldest expires {0}</value></data>
+  <data name="Ui.OldestExpiresIn" xml:space="preserve"><value>oldest expires in {0}</value></data>
+  <data name="Ui.ExpiresOn" xml:space="preserve"><value>expires {0}</value></data>
+  <data name="Ui.ExpiresIn" xml:space="preserve"><value>expires in {0}</value></data>
+  <data name="Ui.ResetCreditCountOne" xml:space="preserve"><value>{0} reset</value></data>
+  <data name="Ui.LastUpdatedAt" xml:space="preserve"><value>Last updated {0}</value></data>
+  <data name="Ui.LastUpdatedStale" xml:space="preserve"><value>Last updated {0} (stale)</value></data>
+  <data name="Ui.RefreshingSuffix" xml:space="preserve"><value> · refreshing…</value></data>
+  <data name="Ui.AppearanceIcon" xml:space="preserve"><value>Icon</value></data>
+  <data name="Ui.AppearanceBars" xml:space="preserve"><value>Bars</value></data>
+  <data name="Ui.AppearanceColorPercent" xml:space="preserve"><value>Color %</value></data>
+  <data name="Ui.WarnBelowPercent" xml:space="preserve"><value>Warn below %</value></data>
+  <data name="Ui.WorkdayHours" xml:space="preserve"><value>Workday hours</value></data>
+  <data name="Ui.ShowBadgeTooltip" xml:space="preserve"><value>Show the Codex badge in the taskbar tile</value></data>
+  <data name="Ui.ShowBarsTooltip" xml:space="preserve"><value>Show progress bars in the taskbar tile; percentages always stay</value></data>
+  <data name="Ui.ShowColorTooltip" xml:space="preserve"><value>Color the remaining percent: orange at 50% or less, red at 20% or less</value></data>
+  <data name="Ui.CautionTooltip" xml:space="preserve"><value>Caution (orange) below this remaining percent</value></data>
+  <data name="Ui.CriticalTooltip" xml:space="preserve"><value>Critical (red) below this remaining percent</value></data>
+  <data name="Ui.WorkdayHoursTooltip" xml:space="preserve"><value>Assumed coding hours in each 24-hour quota day</value></data>
+  <data name="Ui.AppearanceImminentTime" xml:space="preserve"><value>Exact time</value></data>
+  <data name="Ui.ImminentTimeTooltip" xml:space="preserve"><value>Within 24 hours of a reset, show the exact local time instead of a countdown</value></data>
+  <data name="Labels.Session" xml:space="preserve"><value>Session</value></data>
+  <data name="Labels.Weekly" xml:space="preserve"><value>Weekly</value></data>
+  <data name="Labels.Monthly" xml:space="preserve"><value>Monthly</value></data>
+  <data name="Labels.CodeReview" xml:space="preserve"><value>Code review</value></data>
+  <data name="Labels.Credits" xml:space="preserve"><value>Credits</value></data>
+  <data name="Labels.Resets" xml:space="preserve"><value>Resets</value></data>
+  <data name="Labels.Usage" xml:space="preserve"><value>Usage</value></data>
+  <data name="Labels.Model" xml:space="preserve"><value>Model</value></data>
+  <data name="Labels.SparkSession" xml:space="preserve"><value>Spark Session</value></data>
+  <data name="Labels.SparkWeekly" xml:space="preserve"><value>Spark Weekly</value></data>
+  <data name="Labels.Total" xml:space="preserve"><value>Total</value></data>
+  <data name="Labels.AutoComposer" xml:space="preserve"><value>Auto+Composer</value></data>
+  <data name="Labels.Api" xml:space="preserve"><value>API</value></data>
+  <data name="Plan.Guest" xml:space="preserve"><value>Guest</value></data>
+  <data name="Plan.Free" xml:space="preserve"><value>Free</value></data>
+  <data name="Plan.Business" xml:space="preserve"><value>Business</value></data>
+  <data name="Plan.Enterprise" xml:space="preserve"><value>Enterprise</value></data>
+  <data name="Plan.Education" xml:space="preserve"><value>Education</value></data>
+  <data name="Time.Now" xml:space="preserve"><value>now</value></data>
+  <data name="Time.Day" xml:space="preserve"><value>d</value></data>
+  <data name="Time.Hour" xml:space="preserve"><value>h</value></data>
+  <data name="Time.Minute" xml:space="preserve"><value>m</value></data>
+  <data name="Time.UnitSeparator" xml:space="preserve"><value></value></data>
+  <data name="Widget.Loading" xml:space="preserve"><value>Loading…</value></data>
+  <data name="Widget.LoadingActiveProvider" xml:space="preserve"><value>Loading active provider…</value></data>
+  <data name="Widget.Unavailable" xml:space="preserve"><value>Unavailable</value></data>
+  <data name="Pace.CapReached" xml:space="preserve"><value>Pace · cap reached · resets {0}</value></data>
+  <data name="Pace.CapBeforeReset" xml:space="preserve"><value>Pace ~{0}% quota/day → cap {1} (~{2:0.#}d)</value></data>
+  <data name="Pace.ResetsBeforeCap" xml:space="preserve"><value>Pace ~{0}% quota/day · resets before cap</value></data>
+  <data name="AutoSend.Arm" xml:space="preserve"><value>Send typed prompt when session resets</value></data>
+  <data name="AutoSend.ArmTooltip" xml:space="preserve"><value>At the next session reset, press Codex's send button once to submit the prompt currently typed in the chat</value></data>
+  <data name="AutoSend.ArmedTooltip" xml:space="preserve"><value>Auto-send armed: will submit the typed prompt at the next session reset</value></data>
+  <data name="AutoSend.SkipWeekly" xml:space="preserve"><value>Not if the weekly limit also resets</value></data>
+  <data name="AutoSend.SkipWeeklyTooltip" xml:space="preserve"><value>Skip the send when the weekly limit resets at the same time</value></data>
+  <data name="AutoSend.StatusIdle" xml:space="preserve"><value>Auto-send not armed</value></data>
+  <data name="AutoSend.StatusArmed" xml:space="preserve"><value>Auto-send armed: fires at next session reset ({0})</value></data>
+  <data name="AutoSend.StatusConfirming" xml:space="preserve"><value>Auto-send armed: confirming the reset…</value></data>
+  <data name="AutoSend.StatusSent" xml:space="preserve"><value>Auto-send: prompt sent at {0}</value></data>
+  <data name="AutoSend.StatusSkippedWeekly" xml:space="preserve"><value>Auto-send skipped at {0}: weekly limit also reset</value></data>
+  <data name="AutoSend.StatusEmptyPrompt" xml:space="preserve"><value>Auto-send skipped at {0}: chat input was empty</value></data>
+  <data name="AutoSend.StatusNoWindow" xml:space="preserve"><value>Auto-send failed at {0}: Codex window not found</value></data>
+  <data name="AutoSend.StatusNoButton" xml:space="preserve"><value>Auto-send failed at {0}: send button not found</value></data>
+  <data name="AutoSend.StatusFailed" xml:space="preserve"><value>Auto-send failed at {0}</value></data>
+  <data name="AutoSend.StatusNoReset" xml:space="preserve"><value>Auto-send stopped at {0}: reset was not observed</value></data>
+  <data name="AutoSend.StatusArmRejected" xml:space="preserve"><value>Auto-send could not arm: no session reset time is available yet</value></data>
+  <data name="AutoSend.Test" xml:space="preserve"><value>Test</value></data>
+  <data name="AutoSend.Testing" xml:space="preserve"><value>Testing…</value></data>
+  <data name="AutoSend.TestFound" xml:space="preserve"><value>Send button found in '{0}'</value></data>
+  <data name="AutoSend.TestNotFound" xml:space="preserve"><value>Send button not detected</value></data>
+  <data name="Codex.NotRunning" xml:space="preserve"><value>Codex isn't running</value></data>
+  <data name="Codex.NotRunningDetail" xml:space="preserve"><value>Open the Codex app for auto-send to press Send at the next reset.</value></data>
+  <data name="Ui.BothCompact" xml:space="preserve">
+    <value>Both · compact</value>
+  </data>
+  <data name="Ui.QuotaProvider" xml:space="preserve">
+    <value>Quota displayed in the taskbar</value>
+  </data>
+  <data name="Antigravity.Start" xml:space="preserve">
+    <value>Open Antigravity and sign in to read your quota.</value>
+  </data>
+  <data name="Antigravity.NoQuota" xml:space="preserve">
+    <value>Antigravity returned no readable model quotas. Check that you are signed in.</value>
+  </data>
+  <data name="Antigravity.Unavailable" xml:space="preserve">
+    <value>Cannot reach the local Antigravity server. Restart Antigravity, then refresh.</value>
+  </data>
+  <data name="Antigravity.LimitingHint" xml:space="preserve">
+    <value>AG shows the model with the least quota remaining. All model quotas are listed below.</value>
+  </data>
+  <data name="Ui.Language" xml:space="preserve">
+    <value>Language</value>
+  </data>
+  <data name="Ui.LanguageTooltip" xml:space="preserve">
+    <value>Choose application language</value>
+  </data>
+  <data name="Ui.LanguageEnglish" xml:space="preserve">
+    <value>English</value>
+  </data>
+  <data name="Ui.LanguageFrench" xml:space="preserve">
+    <value>Français</value>
+  </data>
+</root>

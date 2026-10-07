@@ -1,0 +1,901 @@
+using System;
+using System.Threading.Tasks;
+using Microsoft.UI;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
+using Windows.Foundation;
+using Windows.Graphics;
+using ValthvnQuota.Controls;
+using ValthvnQuota.Interop;
+using ValthvnQuota.Usage;
+
+namespace ValthvnQuota
+{
+    /// <summary>
+    /// A borderless, always-on-top acrylic flyout shown just above the taskbar widget — a compact
+    /// Codex usage detail panel. Hides itself when it loses focus.
+    /// </summary>
+    public sealed partial class FlyoutWindow : Window
+    {
+        private IntPtr _widgetHandle;
+        private bool _shown;
+        private bool _prewarmed;
+        private bool _sizeHooksRegistered;
+        private bool _applyingBounds;
+        private DispatcherQueueTimer? _boundsUpdateTimer;
+        private DispatcherQueueTimer? _flyoutAnimationTimer;
+        private bool _windowVisible;
+        private RectInt32 _animationTarget;
+        private double _animationStartY;
+        private double _animationDeltaY;
+        private int _animationStep;
+        private bool _animatingClose;
+        private bool _restoreForegroundOnClose;
+        private RectInt32? _lastAppliedBounds;
+        private double _lastObservedScale = -1;
+        private static readonly TimeSpan BoundsCoalesceDelay = TimeSpan.FromMilliseconds(80);
+        private static readonly TimeSpan FlyoutAnimationTick = TimeSpan.FromMilliseconds(12);
+        private static readonly TimeSpan FlyoutOpenCommitDelay = TimeSpan.FromMilliseconds(300);
+        private const int FlyoutAnimationSteps = 10;
+        private const double FlyoutTravelLogicalPx = 20;
+        private static readonly PointInt32 ParkingPosition = new(-32000, -32000);
+        private DateTime _shownAtUtc;
+        private int _profileSequence;
+
+        public bool IsShown => _shown;
+
+        public FlyoutWindow()
+        {
+            InitializeComponent();
+            _initializingAppearance = true;
+            ApplyLocalizedStrings();
+            AntigravityPanel.ConfigureProvider(ProviderId.Antigravity);
+            ApplyProviderMode();
+            LanguageBox.Items.Add(AppStrings.Get("Ui.LanguageEnglish"));
+            LanguageBox.Items.Add(AppStrings.Get("Ui.LanguageFrench"));
+            LanguageBox.SelectedIndex = LanguageSettings.CurrentLanguage == LanguageSettings.French ? 1 : 0;
+            _initializingAppearance = false;
+
+            LanguageSettings.Changed += OnLanguageChanged;
+            SystemBackdrop = new DesktopAcrylicBackdrop();
+            ThemeService.Register(Root);
+            Root.Loaded += (_, _) => RegisterWindowSizeHooks();
+            _boundsUpdateTimer = DispatcherQueue.CreateTimer();
+            _boundsUpdateTimer.Interval = BoundsCoalesceDelay;
+            _boundsUpdateTimer.Tick += (_, _) =>
+            {
+                _boundsUpdateTimer.Stop();
+                ApplyFlyoutBounds();
+            };
+            _flyoutAnimationTimer = DispatcherQueue.CreateTimer();
+            _flyoutAnimationTimer.Interval = FlyoutAnimationTick;
+            _flyoutAnimationTimer.Tick += (_, _) => StepFlyoutAnimation();
+
+            var presenter = OverlappedPresenter.CreateForContextMenu();
+            presenter.IsAlwaysOnTop = true;
+            var appWindow = GetAppWindow();
+            // The flyout is transient taskbar UI, not an application window. Keep it out of the
+            // taskbar/Alt+Tab representation.
+            appWindow.IsShownInSwitchers = false;
+            appWindow.SetPresenter(presenter);
+
+            Activated += OnActivated;
+            Closed += OnClosed;
+
+            // Seed the toggles from persisted settings without firing the change handlers (which write
+            // the same value back and re-render the tile needlessly during construction).
+            _initializingAppearance = true;
+            ShowIconCheck.IsChecked = WidgetAppearanceSettings.ShowIcon;
+            ShowProgressBarCheck.IsChecked = WidgetAppearanceSettings.ShowProgressBar;
+            ColorCodeTextCheck.IsChecked = WidgetAppearanceSettings.ColorCodeText;
+            ImminentCheck.IsChecked = WidgetAppearanceSettings.ShowImminentDate;
+            _initializingAppearance = false;
+
+            // Threshold boxes: setting Value fires ValueChanged, but the handler's equality check
+            // treats an unchanged value as a no-op, so seeding writes nothing back.
+            WarnUpperBox.Value = WidgetAppearanceSettings.WarningUpperPercent;
+            WarnLowerBox.Value = WidgetAppearanceSettings.WarningLowerPercent;
+            WorkdayHoursBox.Value = PaceSettings.WorkdayHours;
+
+            // Keep the panel in sync with every coordinator publish while open.
+            UsageCoordinator.Instance.StateChanged += OnStateChanged;
+            UsageCoordinator.Instance.ProfileChanged += OnProfileChanged;
+            UsageCoordinator.Instance.AntigravityProfileChanged += OnAntigravityProfileChanged;
+            PaceSettings.Changed += OnPaceSettingsChanged;
+            Services.CodexPresence.Instance.Changed += OnCodexPresenceChanged;
+
+            // The panel's header hosts the refresh/close buttons now; route them to the flyout's
+            // actions (fetch + hide).
+            UsagePanel.RefreshRequested += () => _ = UsageCoordinator.Instance.FetchAndPublishAsync(force: true);
+            UsagePanel.SettingsRequested += ToggleAppearanceSection;
+            UsagePanel.CloseRequested += () => Hide(explicitClose: true);
+            AntigravityPanel.RefreshRequested += () => _ = UsageCoordinator.Instance.FetchAndPublishAsync(force: true);
+            AntigravityPanel.SettingsRequested += ToggleAppearanceSection;
+            AntigravityPanel.CloseRequested += () => Hide(explicitClose: true);
+
+            // The window hugs the panel's content height: grow/shrink when content changes (profile
+            // section arrives or disappears, meter rows swap).
+            UsagePanel.SizeChanged += (_, _) => ScheduleFlyoutBoundsUpdate();
+            AntigravityPanel.SizeChanged += (_, _) => ScheduleFlyoutBoundsUpdate();
+            ContentPanel.SizeChanged += (_, _) => ScheduleFlyoutBoundsUpdate();
+        }
+
+        private void ProviderModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_initializingAppearance || ProviderModeBox.SelectedIndex < 0) return;
+            QuotaProviderSettings.DisplayMode = (QuotaDisplayMode)ProviderModeBox.SelectedIndex;
+            ApplyProviderMode();
+            AntigravityPanel.SetResult(UsageCoordinator.Instance.GetState(ProviderId.Antigravity));
+            ApplyCodexPresence(Services.CodexPresence.Instance.IsRunning);
+            ScheduleFlyoutBoundsUpdate();
+        }
+
+        private void ApplyProviderMode()
+        {
+            var mode = QuotaProviderSettings.DisplayMode;
+            UsagePanel.Visibility = mode == QuotaDisplayMode.Antigravity ? Visibility.Collapsed : Visibility.Visible;
+            AntigravityPanel.Visibility = mode == QuotaDisplayMode.Codex ? Visibility.Collapsed : Visibility.Visible;
+            CompactHint.Visibility = Visibility.Collapsed;
+        }
+
+        private bool _initializingAppearance;
+
+        private bool _appearanceSectionVisible;
+        private Storyboard? _appearanceStoryboard;
+
+        private void ApplyLocalizedStrings()
+        {
+            ShowIconCheck.Content = AppStrings.Get("Ui.AppearanceIcon");
+            ShowProgressBarCheck.Content = AppStrings.Get("Ui.AppearanceBars");
+            ColorCodeTextCheck.Content = AppStrings.Get("Ui.AppearanceColorPercent");
+            ImminentCheck.Content = AppStrings.Get("Ui.AppearanceImminentTime");
+            WarnBelowText.Text = AppStrings.Get("Ui.WarnBelowPercent");
+
+            ToolTipService.SetToolTip(ShowIconCheck, AppStrings.Get("Ui.ShowBadgeTooltip"));
+            ToolTipService.SetToolTip(ShowProgressBarCheck, AppStrings.Get("Ui.ShowBarsTooltip"));
+            ToolTipService.SetToolTip(ColorCodeTextCheck, AppStrings.Get("Ui.ShowColorTooltip"));
+            ToolTipService.SetToolTip(WarnUpperBox, AppStrings.Get("Ui.CautionTooltip"));
+            ToolTipService.SetToolTip(WarnLowerBox, AppStrings.Get("Ui.CriticalTooltip"));
+            WorkdayHoursText.Text = AppStrings.Get("Ui.WorkdayHours");
+            ToolTipService.SetToolTip(WorkdayHoursBox, AppStrings.Get("Ui.WorkdayHoursTooltip"));
+            ToolTipService.SetToolTip(ImminentCheck, AppStrings.Get("Ui.ImminentTimeTooltip"));
+            LanguageText.Text = AppStrings.Get("Ui.Language");
+            ToolTipService.SetToolTip(LanguageBox, AppStrings.Get("Ui.LanguageTooltip"));
+            NotRunningTitle.Text = AppStrings.Get("Codex.NotRunning");
+            NotRunningDetail.Text = AppStrings.Get("Codex.NotRunningDetail");
+
+            int providerIdx = ProviderModeBox.SelectedIndex >= 0 ? ProviderModeBox.SelectedIndex : (int)QuotaProviderSettings.DisplayMode;
+            ProviderModeBox.Items.Clear();
+            ProviderModeBox.Items.Add("Codex");
+            ProviderModeBox.Items.Add("Antigravity");
+            ProviderModeBox.Items.Add(AppStrings.Get("Ui.BothCompact"));
+            ProviderModeBox.SelectedIndex = providerIdx;
+            ToolTipService.SetToolTip(ProviderModeBox, AppStrings.Get("Ui.QuotaProvider"));
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ProviderModeBox, AppStrings.Get("Ui.QuotaProvider"));
+        }
+
+        private void ToggleAppearanceSection()
+        {
+            if (_appearanceSectionVisible)
+                CollapseAppearanceSection();
+            else
+                RevealAppearanceSection();
+        }
+
+        private void RevealAppearanceSection()
+        {
+            _appearanceSectionVisible = true;
+            UsagePanel.SetSettingsActive(true);
+            AntigravityPanel.SetSettingsActive(true);
+
+            _appearanceStoryboard?.Stop();
+            var storyboard = new Storyboard();
+
+            // Reveal: the section fades up over the content at the bottom of the window (overlay —
+            // it never contributes to the flyout height).
+            AppearanceSection.Visibility = Visibility.Visible;
+            AppearanceSection.Opacity = 0;
+            AppearanceSectionTransform.Y = 12;
+
+            var fade = BuildFade(0, 1, 180, EasingMode.EaseOut);
+
+            var slide = new DoubleAnimation
+            {
+                From = 12,
+                To = 0,
+                Duration = new Duration(TimeSpan.FromMilliseconds(180)),
+                EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseOut },
+            };
+            Storyboard.SetTarget(slide, AppearanceSectionTransform);
+            Storyboard.SetTargetProperty(slide, "Y");
+
+            storyboard.Children.Add(fade);
+            storyboard.Children.Add(slide);
+            storyboard.Completed += (_, _) =>
+            {
+                AppearanceSection.Opacity = 1;
+                AppearanceSectionTransform.Y = 0;
+            };
+
+            RunAppearanceStoryboard(storyboard);
+        }
+
+        // Collapses the section without toggling: sets the open flag false so the section does not
+        // reappear revealed after the flyout reopens. Runs the same fade-out as the toggle path.
+        private void CollapseAppearanceSection()
+        {
+            _appearanceSectionVisible = false;
+            UsagePanel.SetSettingsActive(false);
+            AntigravityPanel.SetSettingsActive(false);
+
+            _appearanceStoryboard?.Stop();
+            if (AppearanceSection.Visibility != Visibility.Visible)
+            {
+                AppearanceSection.Visibility = Visibility.Collapsed;
+                AppearanceSection.Opacity = 1;
+                AppearanceSectionTransform.Y = 0;
+                return;
+            }
+
+            var storyboard = new Storyboard();
+
+            // Collapse: fade the section out, then remove it from layout.
+            var fade = BuildFade(1, 0, 140, EasingMode.EaseIn);
+
+            storyboard.Children.Add(fade);
+            storyboard.Completed += (_, _) =>
+            {
+                AppearanceSection.Visibility = Visibility.Collapsed;
+                AppearanceSection.Opacity = 1;
+                AppearanceSectionTransform.Y = 0;
+            };
+
+            RunAppearanceStoryboard(storyboard);
+        }
+
+        private DoubleAnimation BuildFade(double from, double to, int milliseconds, EasingMode easing)
+        {
+            var fade = new DoubleAnimation
+            {
+                From = from,
+                To = to,
+                Duration = new Duration(TimeSpan.FromMilliseconds(milliseconds)),
+                EasingFunction = new QuarticEase { EasingMode = easing },
+            };
+            Storyboard.SetTarget(fade, AppearanceSection);
+            Storyboard.SetTargetProperty(fade, "Opacity");
+            return fade;
+        }
+
+        private void RunAppearanceStoryboard(Storyboard storyboard)
+        {
+            _appearanceStoryboard = storyboard;
+            storyboard.Begin();
+        }
+
+        private void AppearanceCheck_Checked(object sender, RoutedEventArgs e) => SetAppearanceCheck(sender, true);
+
+        private void AppearanceCheck_Unchecked(object sender, RoutedEventArgs e) => SetAppearanceCheck(sender, false);
+
+        private void SetAppearanceCheck(object sender, bool isChecked)
+        {
+            if (_initializingAppearance)
+                return;
+
+            if (ReferenceEquals(sender, ShowIconCheck))
+                WidgetAppearanceSettings.ShowIcon = isChecked;
+            else if (ReferenceEquals(sender, ShowProgressBarCheck))
+                WidgetAppearanceSettings.ShowProgressBar = isChecked;
+            else if (ReferenceEquals(sender, ColorCodeTextCheck))
+                WidgetAppearanceSettings.ColorCodeText = isChecked;
+            else if (ReferenceEquals(sender, ImminentCheck))
+                WidgetAppearanceSettings.ShowImminentDate = isChecked;
+
+            RefreshPanelForAppearance();
+        }
+
+        private void WarnThresholdBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+        {
+            if (double.IsNaN(args.NewValue))
+                return;
+
+            int value = (int)args.NewValue;
+            if (ReferenceEquals(sender, WarnUpperBox))
+            {
+                if (value == WidgetAppearanceSettings.WarningUpperPercent)
+                    return;
+                WidgetAppearanceSettings.WarningUpperPercent = value;
+            }
+            else
+            {
+                if (value == WidgetAppearanceSettings.WarningLowerPercent)
+                    return;
+                WidgetAppearanceSettings.WarningLowerPercent = value;
+            }
+
+            // The setters clamp independently (upper 1..99, lower 0..upper-1), so the typed value
+            // can differ from what is applied — e.g. typing 80 into the lower box stores 80 but
+            // reads back as upper-1, and raising the upper box later shifts the effective lower.
+            // Re-seed both boxes from the getters so the display always shows the value in effect;
+            // the equality check above makes the resulting no-op/value-write-back converge.
+            WarnUpperBox.Value = WidgetAppearanceSettings.WarningUpperPercent;
+            WarnLowerBox.Value = WidgetAppearanceSettings.WarningLowerPercent;
+
+            RefreshPanelForAppearance();
+        }
+
+        private void WorkdayHoursBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+        {
+            if (double.IsNaN(args.NewValue))
+                return;
+
+            int value = (int)Math.Round(args.NewValue);
+            if (value == PaceSettings.WorkdayHours)
+                return;
+
+            PaceSettings.WorkdayHours = value;
+            WorkdayHoursBox.Value = PaceSettings.WorkdayHours;
+        }
+
+        private void LanguageBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_initializingAppearance || LanguageBox.SelectedIndex < 0) return;
+            string selectedLang = LanguageBox.SelectedIndex == 1 ? LanguageSettings.French : LanguageSettings.English;
+            if (LanguageSettings.CurrentLanguage != selectedLang)
+            {
+                LanguageSettings.CurrentLanguage = selectedLang;
+            }
+        }
+
+        private void OnLanguageChanged()
+        {
+            DispatcherQueue?.TryEnqueue(() =>
+            {
+                _initializingAppearance = true;
+                ApplyLocalizedStrings();
+                UsagePanel.RefreshLanguage();
+                AntigravityPanel.RefreshLanguage();
+                AutoSendSection.RefreshLanguage();
+
+                int selectedLangIndex = LanguageSettings.CurrentLanguage == LanguageSettings.French ? 1 : 0;
+                LanguageBox.Items.Clear();
+                LanguageBox.Items.Add(AppStrings.Get("Ui.LanguageEnglish"));
+                LanguageBox.Items.Add(AppStrings.Get("Ui.LanguageFrench"));
+                LanguageBox.SelectedIndex = selectedLangIndex;
+
+                _initializingAppearance = false;
+                ScheduleFlyoutBoundsUpdate();
+            });
+        }
+
+        // The panel renders the same remaining percent with the same urgency colors, so a toggle while
+        // the flyout is open should re-render it in place rather than wait for the next publish.
+        private void RefreshPanelForAppearance()
+        {
+            if (!_shown || UsageCoordinator.Instance.LastState is not { } state)
+                return;
+
+            DispatcherQueue.TryEnqueue(() => UsagePanel.SetResult(state));
+        }
+
+        private void OnClosed(object sender, WindowEventArgs args)
+        {
+            _shown = false;
+            UsageCoordinator.Instance.NotifyFlyoutClosed();
+            Closed -= OnClosed;
+            Activated -= OnActivated;
+            UsageCoordinator.Instance.StateChanged -= OnStateChanged;
+            UsageCoordinator.Instance.ProfileChanged -= OnProfileChanged;
+            UsageCoordinator.Instance.AntigravityProfileChanged -= OnAntigravityProfileChanged;
+            PaceSettings.Changed -= OnPaceSettingsChanged;
+            Services.CodexPresence.Instance.Changed -= OnCodexPresenceChanged;
+            LanguageSettings.Changed -= OnLanguageChanged;
+            _appearanceStoryboard?.Stop();
+            _boundsUpdateTimer?.Stop();
+            _flyoutAnimationTimer?.Stop();
+        }
+
+        private void OnStateChanged(UsageResult result)
+        {
+            if (!_shown)
+                return;
+
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (result.Id == ProviderId.Antigravity) AntigravityPanel.SetResult(result);
+                else UsagePanel.SetResult(result);
+            });
+        }
+
+        private void OnProfileChanged(CodexProfileSnapshot profile)
+        {
+            if (!_shown)
+                return;
+
+            ApplyProfileAfterPaint(profile);
+        }
+
+        private void OnAntigravityProfileChanged(CodexProfileSnapshot profile)
+        {
+            if (!_shown)
+                return;
+
+            ApplyAntigravityProfileAfterPaint(profile);
+        }
+
+        private async void ApplyAntigravityProfileAfterPaint(CodexProfileSnapshot? profile)
+        {
+            int sequence = ++_profileSequence;
+            try
+            {
+                if (profile is null)
+                    return;
+
+                await Task.Yield();
+
+                if (sequence != _profileSequence)
+                    return;
+
+                var rows = await Task.Run(() => CodexUsagePanel.BuildHeatmapRows(profile, ProviderId.Antigravity));
+
+                if (sequence != _profileSequence)
+                    return;
+
+                if (!_shown)
+                    return;
+
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (sequence != _profileSequence)
+                        return;
+                    AntigravityPanel.RenderProfileRows(profile, rows);
+                });
+            }
+            catch (Exception ex)
+            {
+                ValthvnQuota.Diagnostics.Log.Error(ex, "ApplyAntigravityProfileAfterPaint failed; keeping previous profile content");
+            }
+        }
+
+        private void OnPaceSettingsChanged() => RefreshPanelForAppearance();
+
+        private void OnCodexPresenceChanged(bool running)
+        {
+            // Presence publishes arrive off the UI thread. If the queue is gone (shutdown),
+            // drop instead of touching UI inline (RPC_E_WRONG_THREAD).
+            if (!DispatcherQueue.TryEnqueue(() => ApplyCodexPresence(running)))
+                ValthvnQuota.Diagnostics.Log.Warning("Flyout presence update dropped: DispatcherQueue unavailable.");
+        }
+
+        private void ApplyCodexPresence(bool running)
+        {
+            // Swap the auto-send controls for a "Codex isn't running" notice inside the open settings
+            // panel; the appearance checkboxes above stay as they are. Nothing changes in the flyout
+            // base — the notice only appears when the settings are revealed.
+            bool codexShown = QuotaProviderSettings.DisplayMode != QuotaDisplayMode.Antigravity;
+            AutoSendSection.Visibility = running && codexShown ? Visibility.Visible : Visibility.Collapsed;
+            NotRunningBlock.Visibility = !running && codexShown ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void OnActivated(object sender, WindowActivatedEventArgs args)
+        {
+            if (args.WindowActivationState == WindowActivationState.Deactivated
+                && User32.GetForegroundWindow() != _widgetHandle
+                && !IsPointerOverWidget())
+            {
+                Hide();
+            }
+        }
+
+        public void ToggleAbove(IntPtr widgetHandle)
+        {
+            if (_shown)
+            {
+                // A click inside the opening window is usually the tail end of a fast double-click:
+                // toggling shut then would blink the flyout out of existence ("fast clicks not
+                // registered"). Only toggle closed once the open has committed.
+                if (DateTime.UtcNow - _shownAtUtc < FlyoutOpenCommitDelay)
+                    return;
+                Hide(explicitClose: true);
+                return;
+            }
+
+            ShowAbove(widgetHandle);
+        }
+
+        /// <summary>
+        /// Compose the first XAML frame and spin up the acrylic backdrop off-screen once, so the first
+        /// real open doesn't flash a black slab while WinUI warms up composition.
+        /// </summary>
+        public void Prewarm()
+        {
+            if (_prewarmed)
+                return;
+            _prewarmed = true;
+
+            var appWindow = GetAppWindow();
+            appWindow.Move(ParkingPosition);
+            appWindow.Show(false);
+            _windowVisible = true;
+            // Paint the content now (off-screen), so the first on-screen composite shows real data
+            // instead of a blank first frame while layout + textures upload.
+            UsagePanel.SetResult(UsageCoordinator.Instance.LastState);
+            UsagePanel.SetProfile(UsageCoordinator.Instance.LastProfile);
+            AntigravityPanel.SetResult(UsageCoordinator.Instance.GetState(ProviderId.Antigravity));
+            AntigravityPanel.SetProfile(UsageCoordinator.Instance.LastAntigravityProfile);
+        }
+
+        public void ShowAbove(IntPtr widgetHandle)
+        {
+            _flyoutAnimationTimer?.Stop();
+            _widgetHandle = widgetHandle;
+            _shown = true;
+            _shownAtUtc = DateTime.UtcNow;
+            UsageCoordinator.Instance.NotifyFlyoutOpen();
+
+            // Hydrate the meter rows synchronously (cheap) so the panel is never a blank slab; defer
+            // the profile heatmap — its local journal scan parses the whole session journal on a cold
+            // cache and can block for seconds — until after the window has painted so the flyout appears
+            // immediately even on the first open.
+            UsagePanel.SetResult(UsageCoordinator.Instance.LastState);
+            ApplyProfileAfterPaint(UsageCoordinator.Instance.LastProfile);
+            UsagePanel.ApplyLogoBrush();
+            ApplyProviderMode();
+            AntigravityPanel.SetResult(UsageCoordinator.Instance.GetState(ProviderId.Antigravity));
+            ApplyAntigravityProfileAfterPaint(UsageCoordinator.Instance.LastAntigravityProfile);
+            AntigravityPanel.ApplyLogoBrush();
+            ApplyCodexPresence(Services.CodexPresence.Instance.IsRunning);
+
+            var target = ApplyFlyoutBounds();
+            if (target is { } start)
+            {
+                int rise = WindowDpi.ToPhysical(FlyoutTravelLogicalPx, Root.XamlRoot?.RasterizationScale ?? GetWindowScale());
+                GetAppWindow().MoveAndResize(new RectInt32(start.X, start.Y + rise, start.Width, start.Height));
+            }
+            if (!_windowVisible)
+            {
+                GetAppWindow().Show();
+                _windowVisible = true;
+            }
+            ActivateFlyout();
+            if (target is { } animate)
+                StartFlyoutAnimation(animate, closing: false);
+            ScheduleFlyoutBoundsUpdate();
+
+            // If the last published state is pending or stale (first open before the widget's periodic
+            // fetch completed, or a session-restored snapshot no live fetch confirmed), kick one now so
+            // the panel fills in fast instead of sitting on the "No usage data yet." placeholder for the
+            // next poll interval.
+            if (UsageCoordinator.Instance.LastState is not { } last || last.IsPending || last.IsStale)
+            {
+                _ = UsageCoordinator.Instance.FetchAndPublishAsync(force: true);
+            }
+
+            // Same story for the profile: seed from the last fetch, and re-fetch so the heatmap is not
+            // stale on first open (the profile only updates on the poll tick).
+            if (UsageCoordinator.Instance.LastProfile is null)
+            {
+                _ = UsageCoordinator.Instance.FetchProfileAsync();
+            }
+        }
+
+        /// <summary>
+        /// Renders a profile (and its local-journal merged heatmap) without blocking the flyout's first
+        /// paint. The journal scan is disk I/O and JSON parsing of the whole session log, so it runs on a
+        /// thread-pool worker; only the resulting XAML element construction is marshalled to the UI
+        /// thread, and only after the window's initial frame has been shown.
+        /// </summary>
+        private async void ApplyProfileAfterPaint(CodexProfileSnapshot? profile)
+        {
+            int sequence = ++_profileSequence;
+            try
+            {
+                if (profile is null)
+                    return;
+
+                // First paint wins: yield so the window (already shown) composites its content before the
+                // heatmap work — even the cheap path — has a chance to contend with it. The meters render
+                // synchronously in ShowAbove, so this only adds the lower-priority profile section.
+                await Task.Yield();
+
+                if (sequence != _profileSequence)
+                    return;
+
+                // The scan + merge is pure data work over the journal; do it off the UI thread so a cold
+                // cache cannot stall input or the entrance animation.
+                var rows = await Task.Run(() => CodexUsagePanel.BuildHeatmapRows(profile));
+
+                if (sequence != _profileSequence)
+                    return;
+
+                if (!_shown)
+                    return;
+
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (sequence != _profileSequence)
+                        return;
+                    UsagePanel.RenderProfileRows(profile, rows);
+                });
+            }
+            catch (Exception ex)
+            {
+                ValthvnQuota.Diagnostics.Log.Error(ex, "ApplyProfileAfterPaint failed; keeping previous profile content");
+            }
+        }
+
+        // The flyout is a separate AppWindow, so XAML theme transitions cannot move the window itself.
+        // Keep the content painted and animate the window bounds at the same edge as the taskbar.
+        private void StartFlyoutAnimation(RectInt32 target, bool closing)
+        {
+            if (_flyoutAnimationTimer is null)
+                return;
+
+            _flyoutAnimationTimer.Stop();
+            _animationTarget = target;
+            _animationStep = 0;
+            _animatingClose = closing;
+
+            int travel = WindowDpi.ToPhysical(
+                FlyoutTravelLogicalPx,
+                Root.XamlRoot?.RasterizationScale ?? GetWindowScale());
+            if (closing)
+            {
+                _animationStartY = GetAppWindow().Position.Y;
+                _animationDeltaY = target.Y + travel - _animationStartY;
+            }
+            else
+            {
+                _animationStartY = target.Y + travel;
+                _animationDeltaY = target.Y - _animationStartY;
+            }
+
+            _flyoutAnimationTimer.Start();
+        }
+
+        private void StepFlyoutAnimation()
+        {
+            if (_flyoutAnimationTimer is null)
+                return;
+
+            _animationStep++;
+            double t = Math.Min(1.0, _animationStep / (double)FlyoutAnimationSteps);
+            double eased = 1 - Math.Pow(1 - t, 3);
+            int y = (int)Math.Round(_animationStartY + _animationDeltaY * eased);
+            GetAppWindow().MoveAndResize(new RectInt32(
+                _animationTarget.X,
+                y,
+                _animationTarget.Width,
+                _animationTarget.Height));
+
+            if (_animationStep < FlyoutAnimationSteps)
+                return;
+
+            _flyoutAnimationTimer.Stop();
+            var appWindow = GetAppWindow();
+            if (_animatingClose)
+            {
+                appWindow.Move(ParkingPosition);
+                if (_restoreForegroundOnClose && _widgetHandle != IntPtr.Zero)
+                    User32.SetForegroundWindow(_widgetHandle);
+                _restoreForegroundOnClose = false;
+            }
+            else
+            {
+                appWindow.MoveAndResize(_animationTarget);
+                // Content can grow while the entrance runs (the profile section is the usual case on
+                // first open), so settle to the measured height after the motion completes.
+                ScheduleFlyoutBoundsUpdate();
+            }
+        }
+
+        private void ActivateFlyout()
+        {
+            Activate();
+
+            // WinUI's Activate() is not always enough to transfer foreground ownership from Explorer,
+            // leaving DesktopAcrylic in its inactive/transparent state until the user clicks the flyout
+            // again. Make the transfer explicit.
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            if (hwnd == IntPtr.Zero)
+                return;
+
+            var foreground = User32.GetForegroundWindow();
+            var foregroundThread = foreground == IntPtr.Zero
+                ? 0u
+                : User32.GetWindowThreadProcessId(foreground, out _);
+            var currentThread = User32.GetCurrentThreadId();
+            bool attached = foregroundThread != 0
+                && foregroundThread != currentThread
+                && User32.AttachThreadInput(foregroundThread, currentThread, true);
+            try
+            {
+                if (User32.GetForegroundWindow() != hwnd)
+                    User32.SetForegroundWindow(hwnd);
+                User32.SetActiveWindow(hwnd);
+                User32.SetFocus(hwnd);
+            }
+            finally
+            {
+                if (attached)
+                    User32.AttachThreadInput(foregroundThread, currentThread, false);
+            }
+        }
+
+        private void RegisterWindowSizeHooks()
+        {
+            if (_sizeHooksRegistered)
+                return;
+
+            _sizeHooksRegistered = true;
+            if (Root.XamlRoot is { } xamlRoot)
+            {
+                _lastObservedScale = xamlRoot.RasterizationScale;
+                xamlRoot.Changed += (_, _) =>
+                {
+                    double scale = xamlRoot.RasterizationScale;
+                    if (Math.Abs(scale - _lastObservedScale) <= 0.001)
+                        return;
+
+                    _lastObservedScale = scale;
+                    ScheduleFlyoutBoundsUpdate();
+                };
+            }
+        }
+
+        private void ScheduleFlyoutBoundsUpdate()
+        {
+            if (!_shown)
+                return;
+
+            if (_boundsUpdateTimer is null)
+            {
+                DispatcherQueue.TryEnqueue(() => ApplyFlyoutBounds());
+                return;
+            }
+
+            _boundsUpdateTimer.Interval = BoundsCoalesceDelay;
+            _boundsUpdateTimer.Stop();
+            _boundsUpdateTimer.Start();
+        }
+
+        private RectInt32? ApplyFlyoutBounds()
+        {
+            if (!_shown || _widgetHandle == IntPtr.Zero || _applyingBounds)
+                return null;
+            if (_flyoutAnimationTimer is { IsRunning: true })
+                return null;
+
+            _applyingBounds = true;
+            try
+            {
+                var scale = Root.XamlRoot?.RasterizationScale ?? GetWindowScale();
+                int w = WindowDpi.ToPhysical(FlyoutLayout.BaseLogicalWidth, scale);
+                // Size the window to the panel's measured content height (the ScrollViewer measures
+                // the panel unconstrained, so ActualHeight is the full content: usage rows + profile
+                // heatmap + detail line) instead of a fixed skeleton. ComputeLogicalHeight clamps to
+                // [MinLogicalContentHeight, MaxLogicalContentHeight].
+                ContentPanel.Measure(new Size(FlyoutLayout.BaseLogicalWidth - 32, double.PositiveInfinity));
+                double contentLogicalHeight = ContentPanel.DesiredSize.Height > 0
+                    ? ContentPanel.DesiredSize.Height
+                    : (ContentPanel.ActualHeight > 0 ? ContentPanel.ActualHeight : FlyoutLayout.MinLogicalContentHeight);
+                int h = WindowDpi.ToPhysical(FlyoutLayout.ComputeLogicalHeight(contentLogicalHeight), scale);
+
+                if (!User32.GetWindowRect(_widgetHandle, out RECT wr))
+                    return null;
+
+                int gap = WindowDpi.ToPhysical(8, scale);
+                int maxHeight = Math.Max(WindowDpi.ToPhysical(320, scale), wr.top - gap);
+                h = Math.Min(h, maxHeight);
+
+                // Right-align the flyout to the widget, floating just above the taskbar.
+                int x = wr.right - w;
+                int y = wr.top - h - gap;
+
+                // Confine the flyout to the monitor that hosts the widget so it never straddles a
+                // monitor boundary on multi-display setups (issue #10).
+                if (TryGetWorkArea(_widgetHandle, out RECT work))
+                {
+                    w = Math.Min(w, work.right - work.left);
+                    h = Math.Min(h, work.bottom - work.top);
+                    x = Math.Clamp(wr.right - w, work.left, work.right - w);
+                    y = Math.Clamp(y, work.top, work.bottom - h);
+                }
+                else
+                {
+                    if (y < 0) y = 0;
+                    if (x < 0) x = 0;
+                }
+
+                var bounds = new RectInt32(x, y, w, h);
+                if (_lastAppliedBounds is { } last
+                    && last.X == bounds.X
+                    && last.Y == bounds.Y
+                    && last.Width == bounds.Width
+                    && last.Height == bounds.Height)
+                    return null;
+
+                _lastAppliedBounds = bounds;
+                GetAppWindow().MoveAndResize(bounds);
+                return bounds;
+            }
+            finally
+            {
+                _applyingBounds = false;
+            }
+        }
+
+        private double GetWindowScale()
+        {
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            var dpi = User32.GetDpiForWindow(hwnd);
+            return dpi > 0 ? dpi / 96d : 1d;
+        }
+
+        // Work area (taskbar-excluded) of the monitor hosting the given window, in physical pixels.
+        private static bool TryGetWorkArea(IntPtr hwnd, out RECT work)
+        {
+            work = default;
+            if (hwnd == IntPtr.Zero)
+                return false;
+
+            var monitor = User32.MonitorFromWindow(hwnd, MonitorFromFlags.MONITOR_DEFAULTTONEAREST);
+            if (monitor == IntPtr.Zero)
+                return false;
+
+            var info = MONITORINFO.Create();
+            if (!User32.GetMonitorInfo(monitor, ref info))
+                return false;
+
+            work = info.rcWork;
+            return work.right > work.left && work.bottom > work.top;
+        }
+
+        public void Hide() => Hide(explicitClose: false);
+
+        private void Hide(bool explicitClose)
+        {
+            if (!_shown)
+                return;
+
+            var appWindow = GetAppWindow();
+            var target = _lastAppliedBounds ?? new RectInt32(
+                appWindow.Position.X,
+                appWindow.Position.Y,
+                appWindow.Size.Width,
+                appWindow.Size.Height);
+            _shown = false;
+            _lastAppliedBounds = null;
+            _boundsUpdateTimer?.Stop();
+            UsageCoordinator.Instance.NotifyFlyoutClosed();
+            _restoreForegroundOnClose = explicitClose;
+            CollapseAppearanceSection();
+            StartFlyoutAnimation(target, closing: true);
+        }
+
+        private AppWindow GetAppWindow()
+        {
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            return AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(hwnd));
+        }
+
+        private bool IsPointerOverWidget()
+        {
+            if (_widgetHandle == IntPtr.Zero)
+                return false;
+            if (!User32.GetCursorPos(out var point))
+                return false;
+            if (!User32.GetWindowRect(_widgetHandle, out var rect))
+                return false;
+
+            return point.x >= rect.left
+                && point.x <= rect.right
+                && point.y >= rect.top
+                && point.y <= rect.bottom;
+        }
+    }
+}

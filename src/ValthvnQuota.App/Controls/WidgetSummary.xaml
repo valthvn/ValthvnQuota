@@ -1,0 +1,51 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="ValthvnQuota.Controls.WidgetSummary"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <UserControl.Transitions>
+        <TransitionCollection>
+            <EntranceThemeTransition/>
+            <RepositionThemeTransition/>
+        </TransitionCollection>
+    </UserControl.Transitions>
+
+    <Grid x:Name="Root" Background="Transparent" Padding="4,3">
+        <Grid x:Name="Panel" ColumnSpacing="6" RowSpacing="3"
+              VerticalAlignment="Center" HorizontalAlignment="Center">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="17"/>
+                <RowDefinition Height="17"/>
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="IconColumn" Width="30"/>
+            </Grid.ColumnDefinitions>
+
+            <Grid x:Name="BadgeHost" Grid.Row="0" Grid.RowSpan="2" Grid.Column="0"
+                  Width="30" Height="30"
+                  HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Viewbox x:Name="BadgeGlyphBox" Width="20" Height="20" Visibility="Collapsed"
+                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Canvas Width="100" Height="100">
+                        <Path x:Name="BadgeGlyph"/>
+                    </Canvas>
+                </Viewbox>
+                <TextBlock x:Name="BadgeText" Text="?" FontSize="15" FontWeight="SemiBold"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <!-- Auto-send armed indicator: a green dot in the badge corner, shown only while the
+                     one-shot auto-send is armed (see AutoSendService). Fixed position, so it never
+                     changes the tile width. -->
+                <Ellipse x:Name="ArmedDot"
+                         Width="7" Height="7"
+                         HorizontalAlignment="Right" VerticalAlignment="Top"
+                         Margin="0,2,-3,0"
+                         Visibility="Collapsed"
+                         IsHitTestVisible="False"/>
+            </Grid>
+        </Grid>
+    </Grid>
+</UserControl>

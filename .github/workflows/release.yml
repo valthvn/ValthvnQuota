@@ -1,0 +1,206 @@
+﻿# Build ValthvnQuotaSetup-{version}-x64.exe and ValthvnQuotaSetup-{version}-arm64.exe on version tags.
+# GitHub automatically attaches Source code (zip) and Source code (tar.gz) from the tag.
+#
+# Usage:
+#   git tag v1.1.2
+#   git push origin v1.1.2
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  PROJECT: src/ValthvnQuota.App/ValthvnQuota.App.csproj
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Resolve version
+        id: version
+        run: |
+          if ($env:GITHUB_REF -match 'refs/tags/(v.+)$') {
+            $tag = $Matches[1]
+          } else {
+            # Date-based, numeric only: the semver flows into -p:Version and must be a valid
+            # .NET version string (CS7034 otherwise). No release is published on dispatch anyway.
+            $tag = "v$((Get-Date -Format 'yyyy.MM.dd'))"
+          }
+
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') { throw "Invalid tag '$tag': expected vX.Y.Z" }
+          $semver = $Matches[1]
+          $parts = $semver.Split('.', [StringSplitOptions]::RemoveEmptyEntries)
+          while ($parts.Count -lt 3) { $parts += '0' }
+          $semver = $parts -join '.'
+
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "semver=$semver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          Write-Host "Tag: $tag"
+          Write-Host "Semver: $semver"
+
+      - name: Restore
+        run: dotnet restore $env:PROJECT
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installers (x64 + arm64)
+        id: build
+        env:
+          SEMVER: ${{ steps.version.outputs.semver }}
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found at $iscc" }
+
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $semver = $env:SEMVER
+          $parts = $semver.Split('.', [StringSplitOptions]::RemoveEmptyEntries)
+          while ($parts.Count -lt 3) { $parts += '0' }
+          $semver = $parts -join '.'
+          $assemblyVersion = "$($parts[0]).$($parts[1]).$($parts[2]).0"
+          # Manual dispatches fall back to a date-based semver (e.g. 2026.08.18-manual) whose patch
+          # segment is not numeric; only tag runs carry a plain patch, so coerce non-numeric to 0.
+          $patch = $parts[2]
+          if ($patch -notmatch '^\d+$') { $patch = '0' }
+          $applicationVersion = [int]$patch
+          $targets = @(
+            @{ Platform = 'x64'; Rid = 'win-x64'; Arch = 'x64' },
+            @{ Platform = 'ARM64'; Rid = 'win-arm64'; Arch = 'arm64' }
+          )
+
+          $hashes = @()
+
+          foreach ($target in $targets) {
+            Write-Host "=== Publishing $($target.Arch) ==="
+            dotnet publish $env:PROJECT `
+              -c Release `
+              -p:Platform=$($target.Platform) `
+              -p:WindowsPackageType=None `
+              -p:Version=$semver `
+              -p:AssemblyVersion=$assemblyVersion `
+              -p:FileVersion=$assemblyVersion `
+              -p:ApplicationDisplayVersion=$semver `
+              -p:ApplicationVersion=$applicationVersion `
+              -r $($target.Rid) `
+              --self-contained true
+
+            $candidates = @(
+              "src/ValthvnQuota.App/bin/$($target.Platform)/Release/net9.0-windows10.0.19041.0/$($target.Rid)/publish",
+              "src/ValthvnQuota.App/bin/Release/net9.0-windows10.0.19041.0/$($target.Rid)/publish"
+            )
+            $publishDirRel = $candidates | Where-Object { Test-Path (Join-Path $_ 'ValthvnQuota.exe') } | Select-Object -First 1
+            if (-not $publishDirRel) {
+              throw "Publish output not found for $($target.Arch)."
+            }
+
+            $priPath = @('ValthvnQuota.pri', 'resources.pri') |
+              ForEach-Object { Join-Path $publishDirRel $_ } |
+              Where-Object { Test-Path $_ } |
+              Select-Object -First 1
+            if (-not $priPath) {
+              throw "Publish output is missing the WinUI PRI resource file. Installer would crash on launch."
+            }
+
+            $publishDir = (Resolve-Path -LiteralPath $publishDirRel).Path
+            # The project copies loose .xbf files into the publish directory after publishing.
+
+            $requiredXbf = @(
+              'App.xbf',
+              'FlyoutWindow.xbf',
+              'Controls\WidgetSummary.xbf',
+              'Controls\CodexUsagePanel.xbf'
+            )
+            foreach ($rel in $requiredXbf) {
+              if (-not (Test-Path (Join-Path $publishDir $rel))) {
+                throw "Publish output is missing $rel — installer would crash on launch."
+              }
+            }
+
+            # WinUI loads this resource dll on the first render of controls whose templates live in the
+            # AppSDK resource container; omit it and the flyout dies with 0x8007007E on first open.
+            $insightsDll = Join-Path $publishDir 'Microsoft.WindowsAppRuntime.Insights.Resource.dll'
+            if (-not (Test-Path $insightsDll)) {
+              throw "Publish output is missing Microsoft.WindowsAppRuntime.Insights.Resource.dll — flyout would crash on first open."
+            }
+
+            Write-Host "Verified loose XBF files in publish directory."
+            $outputDir = (Resolve-Path -LiteralPath artifacts).Path
+
+            Write-Host "Publish directory: $publishDir"
+            & $iscc installer/ValthvnQuota.iss `
+              "/DPublishDir=$publishDir" `
+              "/DMyAppVersion=$semver" `
+              "/DTargetArch=$($target.Arch)" `
+              "/DOutputDir=$outputDir"
+
+            $setupName = "ValthvnQuotaSetup-$semver-$($target.Arch).exe"
+            $built = Get-ChildItem artifacts -Filter $setupName -File | Select-Object -First 1
+            if (-not $built) {
+              throw "Expected $setupName in artifacts."
+            }
+
+            $hash = (Get-FileHash -LiteralPath $built.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $sizeMb = [math]::Round($built.Length / 1MB, 0)
+            $hashes += [pscustomobject]@{ Name = $setupName; Sha256 = $hash; SizeMb = $sizeMb }
+            Write-Host "$setupName — $sizeMb MB — sha256:$hash"
+
+          }
+
+          $body = @(
+            '## Windows',
+            '',
+            'Pick the installer for your PC:',
+            ''
+          )
+          foreach ($item in $hashes) {
+            $body += "**$($item.Name)**"
+            $body += "sha256:$($item.Sha256)"
+            $body += "$($item.SizeMb) MB"
+            $body += ''
+          }
+          $body += @(
+            'GitHub also provides **Source code (zip)** and **Source code (tar.gz)** for this tag.',
+            '',
+            '### Install',
+            '',
+            '1. Download the `.exe` matching your CPU (`x64` for most PCs, `arm64` for Snapdragon / ARM Windows).',
+            '2. Run the installer and launch ValthvnQuota from the Start menu.',
+            '3. Make sure you have run `codex login` (or have `OPENAI_API_KEY` in `%USERPROFILE%\.codex\auth.json`) — ValthvnQuota reads your local Codex credentials.',
+            '',
+            'SmartScreen may warn on unsigned builds — **More info** → **Run anyway**.'
+          )
+
+          $releaseBody = $body -join "`n"
+          Set-Content -Path artifacts/RELEASE_BODY.md -Value $releaseBody -Encoding utf8
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ValthvnQuota ${{ steps.version.outputs.semver }}
+          files: |
+            artifacts/ValthvnQuotaSetup-*.exe
+          generate_release_notes: false
+          body_path: artifacts/RELEASE_BODY.md

@@ -1,0 +1,8 @@
+﻿<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ValthvnQuota.App/ValthvnQuota.App.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ValthvnQuota.Tests/ValthvnQuota.Tests.csproj" />
+  </Folder>
+</Solution>

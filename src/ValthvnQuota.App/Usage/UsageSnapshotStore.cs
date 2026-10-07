@@ -1,0 +1,347 @@
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace ValthvnQuota.Usage
+{
+    /// <summary>
+    /// Persists the last successful usage snapshot per provider to %LOCALAPPDATA% so the taskbar widget
+    /// can paint real numbers immediately after a reboot instead of a placeholder (issue #21).
+    /// Restored snapshots are marked stale — the widget dims them until the first live fetch lands.
+    ///
+    /// The domain models are constructor-shaped and carry computed members, so they are mapped through
+    /// explicit DTOs rather than serialized directly.
+    /// </summary>
+    internal static class UsageSnapshotStore
+    {
+        /// <summary>A restored snapshot older than this is discarded: quota windows have likely rolled.</summary>
+        internal static readonly TimeSpan MaxRestoreAge = TimeSpan.FromHours(24);
+
+        /// <summary>Default location; tests pass their own directory instead.</summary>
+        public static string DefaultDirectory => AppStorage.AppDataDirectory;
+
+        private static string FilePathIn(string directory) => Path.Combine(directory, "usage-snapshots.json");
+
+        /// <summary>
+        /// Reads the persisted snapshots, dropping any that are too old or whose rate windows have already
+        /// reset (a reset window would render a percentage that is no longer true).
+        /// </summary>
+        public static Dictionary<ProviderId, UsageResult> Load(string directory, Func<ProviderId, IUsageProvider?> providerLookup)
+        {
+            var restored = new Dictionary<ProviderId, UsageResult>();
+            try
+            {
+                var path = FilePathIn(directory);
+                if (!File.Exists(path))
+                    return restored;
+
+                var file = JsonSerializer.Deserialize(File.ReadAllText(path), UsageSnapshotsJsonContext.Default.StoredFile);
+                if (file?.Entries is null)
+                    return restored;
+
+                var now = DateTimeOffset.Now;
+                foreach (var entry in file.Entries)
+                {
+                    if (!Enum.TryParse<ProviderId>(entry.Provider, out var id))
+                        continue;
+                    if (providerLookup(id) is not { } provider)
+                        continue;
+                    // Age off what was last CONFIRMED long ago, not what last CHANGED long ago. A usage
+                    // value that simply hasn't moved keeps its original FetchedAt indefinitely, so testing
+                    // that here would discard an entry the previous session re-confirmed live moments
+                    // before shutdown. SavedAt is absent on files written before this stamp existed, so
+                    // fall back to FetchedAt for those.
+                    if (now - (entry.SavedAt ?? entry.FetchedAt) > MaxRestoreAge)
+                        continue;
+                    if (entry.Usage is not { } usage)
+                        continue;
+                    if (HasResetWindow(usage, now))
+                        continue;
+
+                    var fetch = new ProviderFetchResult(ToSnapshot(usage), entry.SourceLabel ?? string.Empty, entry.FetchedAt);
+                    restored[id] = UsageResult.Success(id, provider, fetch).AsStale();
+                }
+            }
+            catch (Exception ex)
+            {
+                Diagnostics.Log.Warning(ex, "Failed to restore persisted usage snapshots");
+            }
+
+            return restored;
+        }
+
+        public static void Save(string directory, IReadOnlyDictionary<ProviderId, UsageResult> results)
+        {
+            try
+            {
+                var savedAts = LoadAllSavedAt(directory);
+                var entries = results
+                    .Where(kv => kv.Value.Fetch is not null)
+                    .Select(kv =>
+                    {
+                        // Never re-stamp a stale entry's SavedAt: it was restored, not re-confirmed live.
+                        // Stamping "now" would silently extend its restore life past MaxRestoreAge.
+                        // (Usual caller already skips re-saving unchanged live values; this covers the
+                        // paths that hand an IsStale fallback snapshot back to persistence.)
+                        savedAts.TryGetValue(kv.Key, out DateTimeOffset? previouslySavedAt);
+                        var savedAt = kv.Value.IsStale && previouslySavedAt is { } preserved
+                            ? preserved
+                            : DateTimeOffset.Now;
+                        return new StoredEntry
+                        {
+                            Provider = kv.Key.ToString(),
+                            FetchedAt = kv.Value.Fetch!.FetchedAt,
+                            SavedAt = savedAt,
+                            SourceLabel = kv.Value.Fetch!.SourceLabel,
+                            Usage = FromSnapshot(kv.Value.Fetch!.Usage),
+                        };
+                    })
+                    .ToList();
+
+                Directory.CreateDirectory(directory);
+                var json = JsonSerializer.Serialize(new StoredFile { Entries = entries }, UsageSnapshotsJsonContext.Default.StoredFile);
+
+                // Write through a temp file so a crash mid-write can't leave a truncated cache behind.
+                var path = FilePathIn(directory);
+                var temp = path + ".tmp";
+                File.WriteAllText(temp, json);
+                File.Move(temp, path, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                Diagnostics.Log.Warning(ex, "Failed to persist usage snapshots");
+            }
+        }
+
+        private static Dictionary<ProviderId, DateTimeOffset?> LoadAllSavedAt(string directory)
+        {
+            var savedAts = new Dictionary<ProviderId, DateTimeOffset?>();
+            try
+            {
+                var path = FilePathIn(directory);
+                if (!File.Exists(path))
+                    return savedAts;
+
+                var file = JsonSerializer.Deserialize(File.ReadAllText(path), UsageSnapshotsJsonContext.Default.StoredFile);
+                foreach (var entry in file?.Entries ?? Enumerable.Empty<StoredEntry>())
+                {
+                    if (Enum.TryParse<ProviderId>(entry.Provider, out var id) && !savedAts.ContainsKey(id))
+                        savedAts[id] = entry.SavedAt;
+                }
+            }
+            catch
+            {
+            }
+
+            return savedAts;
+        }
+
+        private static bool HasResetWindow(StoredUsage usage, DateTimeOffset now)
+        {
+            if (usage.Cost?.ResetsAt is { } costReset && now >= costReset)
+                return true;
+            if (usage.ResetCredits?.Credits?.Any(c => c?.ExpiresAt is { } expiresAt && now >= expiresAt) == true)
+                return true;
+            return new[] { usage.Primary, usage.Secondary, usage.ModelSpecific, usage.Monthly }
+                .Concat(usage.ExtraRateWindows?.Select(w => w.Window) ?? Enumerable.Empty<StoredWindow?>())
+                .Any(w => w?.ResetAt is { } resetAt && now >= resetAt);
+        }
+
+        private static UsageSnapshot ToSnapshot(StoredUsage stored)
+        {
+            var primary = ToWindow(stored.Primary);
+            var snapshot = new UsageSnapshot(primary ?? new RateWindow(0))
+            {
+                // A null Primary carries no window data: never keep HasPrimaryWindow true with the
+                // RateWindow(0) placeholder, which would render a fake "Session 0%" bar.
+                HasPrimaryWindow = stored.HasPrimaryWindow && primary != null,
+                Secondary = ToWindow(stored.Secondary),
+                ModelSpecific = ToWindow(stored.ModelSpecific),
+                Monthly = ToWindow(stored.Monthly),
+                LoginMethod = stored.LoginMethod,
+                Email = stored.Email,
+                Cost = ToCost(stored.Cost),
+                AdditionalUsage = stored.AdditionalUsage is { } a
+                    ? new AdditionalUsageSnapshot
+                    {
+                        Enabled = a.Enabled,
+                        SpentUsd = a.SpentUsd,
+                        BudgetUsd = a.BudgetUsd,
+                        IsCredits = a.IsCredits,
+                    }
+                    : null,
+                ResetCredits = stored.ResetCredits is { } rc
+                    ? new ResetCreditsSnapshot(
+                        rc.AvailableCount,
+                        rc.Credits?.Select(c => new ResetCreditGrant(c.Status ?? string.Empty, c.GrantedAt, c.ExpiresAt)).ToList()
+                            ?? new List<ResetCreditGrant>())
+                    : null,
+            };
+
+            foreach (var extra in stored.ExtraRateWindows ?? new List<StoredNamedWindow>())
+            {
+                if (ToWindow(extra.Window) is { } window)
+                    snapshot.ExtraRateWindows.Add(new NamedRateWindow(extra.Id ?? string.Empty, extra.Title ?? string.Empty, window));
+            }
+
+            return snapshot;
+        }
+
+        private static StoredUsage FromSnapshot(UsageSnapshot usage) => new()
+        {
+            Primary = FromWindow(usage.Primary),
+            HasPrimaryWindow = usage.HasPrimaryWindow,
+            Secondary = FromWindow(usage.Secondary),
+            ModelSpecific = FromWindow(usage.ModelSpecific),
+            Monthly = FromWindow(usage.Monthly),
+            ExtraRateWindows = usage.ExtraRateWindows
+                .Select(w => new StoredNamedWindow { Id = w.Id, Title = w.Title, Window = FromWindow(w.Window) })
+                .ToList(),
+            LoginMethod = usage.LoginMethod,
+            Email = usage.Email,
+            Cost = usage.Cost is { } c
+                ? new StoredCost { Amount = c.Amount, Currency = c.Currency, Label = c.Label, Limit = c.Limit, ResetsAt = c.ResetsAt }
+                : null,
+            AdditionalUsage = usage.AdditionalUsage is { } a
+                ? new StoredAdditionalUsage { Enabled = a.Enabled, SpentUsd = a.SpentUsd, BudgetUsd = a.BudgetUsd, IsCredits = a.IsCredits }
+                : null,
+            ResetCredits = usage.ResetCredits is { } rc
+                ? new StoredResetCredits
+                {
+                    AvailableCount = rc.AvailableCount,
+                    Credits = rc.Credits
+                        .Select(c => new StoredResetCredit { Status = c.Status, GrantedAt = c.GrantedAt, ExpiresAt = c.ExpiresAt })
+                        .ToList(),
+                }
+                : null,
+        };
+
+        private static RateWindow? ToWindow(StoredWindow? stored)
+            => stored is null
+                ? null
+                : new RateWindow(stored.UsedPercent, stored.WindowMinutes, stored.ResetAt, stored.ResetDescription, stored.Label)
+                {
+                    ShowCostValue = stored.ShowCostValue,
+                };
+
+        private static StoredWindow? FromWindow(RateWindow? window)
+            => window is null
+                ? null
+                : new StoredWindow
+                {
+                    UsedPercent = window.UsedPercent,
+                    WindowMinutes = window.WindowMinutes,
+                    ResetAt = window.ResetAt,
+                    ResetDescription = window.ResetDescription,
+                    Label = window.Label,
+                    ShowCostValue = window.ShowCostValue,
+                };
+
+        private static CostSnapshot? ToCost(StoredCost? stored)
+        {
+            if (stored is null)
+                return null;
+
+            var cost = new CostSnapshot(stored.Amount, stored.Currency ?? "USD", stored.Label ?? string.Empty)
+            {
+                ResetsAt = stored.ResetsAt,
+            };
+            if (stored.Limit is { } limit)
+                cost.Limit = limit;
+            return cost;
+        }
+
+        internal sealed class StoredFile
+        {
+            public List<StoredEntry>? Entries { get; set; }
+        }
+
+        internal sealed class StoredEntry
+        {
+            public string? Provider { get; set; }
+            public DateTimeOffset FetchedAt { get; set; }
+
+            /// <summary>
+            /// When this entry was last written to disk, i.e. last confirmed live. Null on files written
+            /// before this field existed. Drives restore expiry; FetchedAt drives the "Last updated" line.
+            /// </summary>
+            public DateTimeOffset? SavedAt { get; set; }
+            public string? SourceLabel { get; set; }
+            public StoredUsage? Usage { get; set; }
+        }
+
+        internal sealed class StoredUsage
+        {
+            public StoredWindow? Primary { get; set; }
+            public bool HasPrimaryWindow { get; set; } = true;
+            public StoredWindow? Secondary { get; set; }
+            public StoredWindow? ModelSpecific { get; set; }
+            public StoredWindow? Monthly { get; set; }
+            public List<StoredNamedWindow>? ExtraRateWindows { get; set; }
+            public string? LoginMethod { get; set; }
+            public string? Email { get; set; }
+            public StoredCost? Cost { get; set; }
+            public StoredAdditionalUsage? AdditionalUsage { get; set; }
+            public StoredResetCredits? ResetCredits { get; set; }
+        }
+
+        internal sealed class StoredWindow
+        {
+            public double UsedPercent { get; set; }
+            public int? WindowMinutes { get; set; }
+            public DateTimeOffset? ResetAt { get; set; }
+            public string? ResetDescription { get; set; }
+            public string? Label { get; set; }
+            public bool ShowCostValue { get; set; }
+        }
+
+        internal sealed class StoredNamedWindow
+        {
+            public string? Id { get; set; }
+            public string? Title { get; set; }
+            public StoredWindow? Window { get; set; }
+        }
+
+        internal sealed class StoredCost
+        {
+            public double Amount { get; set; }
+            public string? Currency { get; set; }
+            public string? Label { get; set; }
+            public double? Limit { get; set; }
+            public DateTimeOffset? ResetsAt { get; set; }
+        }
+
+        internal sealed class StoredAdditionalUsage
+        {
+            public bool Enabled { get; set; }
+            public double SpentUsd { get; set; }
+            public double? BudgetUsd { get; set; }
+            public bool IsCredits { get; set; }
+        }
+
+        internal sealed class StoredResetCredits
+        {
+            public int AvailableCount { get; set; }
+            public List<StoredResetCredit>? Credits { get; set; }
+        }
+
+        internal sealed class StoredResetCredit
+        {
+            public string? Status { get; set; }
+            public DateTimeOffset? GrantedAt { get; set; }
+            public DateTimeOffset? ExpiresAt { get; set; }
+        }
+    }
+
+    /// <summary>Source-generated serializer for the persisted snapshot DTOs. Trimming disables the
+    /// reflection-based resolver, so this context is the only working path in trimmed publishes.
+    /// Mirrors the previous <c>SerializerOptions</c> exactly (<see cref="JsonIgnoreCondition.WhenWritingNull"/>).</summary>
+    [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonSerializable(typeof(UsageSnapshotStore.StoredFile))]
+    internal sealed partial class UsageSnapshotsJsonContext : JsonSerializerContext
+    {
+    }
+}
